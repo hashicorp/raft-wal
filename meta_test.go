@@ -46,7 +46,7 @@ func testMeta(t *testing.T, targetVersion int) (*wal, *os.File, func()) {
 	w.createMetaPage(f.Name())
 
 	w.SetUint64([]byte("bar"), 10)
-	w.setFirstIndex(321)
+	w.setFirstIndexLocked(321)
 
 	for i := 2; i < targetVersion; i++ {
 		v := fmt.Sprintf("val%d", i+1)

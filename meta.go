@@ -13,7 +13,7 @@ import (
 
 const (
 	meta_page_size   = 4 * 1024
-	meta_header_size = 32
+	meta_header_size = 512
 )
 
 var (
@@ -23,9 +23,9 @@ var (
 type meta struct {
 	Version uint64
 
-	FirstIndex uint64
-	BytesStore map[string][]byte
-	UintStore  map[string]uint64
+	FirstIndex uint64            `codec:"fi"`
+	BytesStore map[string][]byte `codec:"bs"`
+	UintStore  map[string]uint64 `codec:"us"`
 }
 
 func newMeta() *meta {
@@ -75,11 +75,11 @@ func loadMetaFromBytes(bytes []byte) (*meta, error) {
 	return &m, nil
 }
 
-func (l *wal) Get(key []byte) ([]byte, error) {
-	l.metaLock.RLock()
-	defer l.metaLock.RUnlock()
+func (w *wal) Get(key []byte) ([]byte, error) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 
-	v, ok := l.meta.BytesStore[string(key)]
+	v, ok := w.meta.BytesStore[string(key)]
 	if !ok {
 		return nil, errNotFound
 	}
@@ -89,11 +89,11 @@ func (l *wal) Get(key []byte) ([]byte, error) {
 	return r, nil
 }
 
-func (l *wal) GetUint64(key []byte) (uint64, error) {
-	l.metaLock.RLock()
-	defer l.metaLock.RUnlock()
+func (w *wal) GetUint64(key []byte) (uint64, error) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 
-	v, ok := l.meta.UintStore[string(key)]
+	v, ok := w.meta.UintStore[string(key)]
 	if !ok {
 		return 0, errNotFound
 	}
@@ -101,54 +101,51 @@ func (l *wal) GetUint64(key []byte) (uint64, error) {
 	return v, nil
 }
 
-func (l *wal) Set(key []byte, val []byte) error {
-	l.metaLock.Lock()
-	defer l.metaLock.Unlock()
+func (w *wal) Set(key []byte, val []byte) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 
 	vc := make([]byte, len(val))
 	copy(vc, val)
 
-	l.meta.Version++
-	l.meta.BytesStore[string(key)] = vc
+	w.meta.Version++
+	w.meta.BytesStore[string(key)] = vc
 
-	return l.writeMetaPage()
+	return w.writeMetaPage()
 }
 
-func (l *wal) SetUint64(key []byte, val uint64) error {
-	l.metaLock.Lock()
-	defer l.metaLock.Unlock()
+func (w *wal) SetUint64(key []byte, val uint64) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 
-	l.meta.Version++
-	l.meta.UintStore[string(key)] = val
+	w.meta.Version++
+	w.meta.UintStore[string(key)] = val
 
-	return l.writeMetaPage()
+	return w.writeMetaPage()
 }
 
-func (l *wal) setFirstIndex(idx uint64) error {
-	l.metaLock.Lock()
-	defer l.metaLock.Unlock()
+func (w *wal) setFirstIndexLocked(idx uint64) error {
+	w.meta.Version++
+	w.meta.FirstIndex = idx
 
-	l.meta.Version++
-	l.meta.FirstIndex = idx
-
-	return l.writeMetaPage()
+	return w.writeMetaPage()
 
 }
 
-func (l *wal) writeMetaPage() error {
-	bytes, err := l.meta.toBytes()
+func (w *wal) writeMetaPage() error {
+	bytes, err := w.meta.toBytes()
 	if err != nil {
 		return fmt.Errorf("failed to serialize meta: %v", err)
 	}
 
-	slot := l.meta.Version % 2
+	slot := w.meta.Version % 2
 	offset := slot*meta_page_size + meta_header_size
-	_, err = l.metaFile.WriteAt(bytes, int64(offset))
+	_, err = w.metaFile.WriteAt(bytes, int64(offset))
 	if err != nil {
 		return fmt.Errorf("failed to persist meta: %v", err)
 	}
 
-	err = fileutil.Fdatasync(l.metaFile)
+	err = fileutil.Fdatasync(w.metaFile)
 	if err != nil {
 		return fmt.Errorf("failed to persist meta: %v", err)
 	}
@@ -156,11 +153,11 @@ func (l *wal) writeMetaPage() error {
 	return nil
 }
 
-func (l *wal) restoreMetaPage(path string) error {
+func (w *wal) restoreMetaPage(path string) error {
 	// open file if it is present
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
-		return l.createMetaPage(path)
+		return w.createMetaPage(path)
 	} else if err != nil {
 		return fmt.Errorf("failed to open meta.db file: %v", err)
 	}
@@ -172,7 +169,7 @@ func (l *wal) restoreMetaPage(path string) error {
 
 	if fi.Size() < meta_header_size+2*meta_page_size {
 		// torn write: crashed while creating file?!
-		return l.createMetaPage(path)
+		return w.createMetaPage(path)
 	}
 
 	header_bytes := make([]byte, meta_header_size)
@@ -209,19 +206,19 @@ func (l *wal) restoreMetaPage(path string) error {
 	}
 
 	// metaA is highest transaction
-	l.metaFile = f
+	w.metaFile = f
 	if metaA == nil {
-		l.meta = metaB
+		w.meta = metaB
 	} else if metaB != nil && metaB.Version > metaA.Version {
-		l.meta = metaB
+		w.meta = metaB
 	} else {
-		l.meta = metaA
+		w.meta = metaA
 	}
 
 	return nil
 }
 
-func (l *wal) createMetaPage(path string) error {
+func (w *wal) createMetaPage(path string) error {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to open meta.db file: %v", err)
@@ -247,8 +244,8 @@ func (l *wal) createMetaPage(path string) error {
 		return fmt.Errorf("failed to persist meta: %v", err)
 	}
 
-	l.meta = meta
-	l.metaFile = f
+	w.meta = meta
+	w.metaFile = f
 
 	return nil
 
