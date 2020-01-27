@@ -9,6 +9,43 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestSerialization_Roundtrips(t *testing.T) {
+	meta := &meta{
+		Version:    32,
+		FirstIndex: 12,
+		BytesStore: map[string][]byte{
+			"foo": []byte("bar"),
+		},
+		UintStore: map[string]uint64{
+			"bar": 21,
+		},
+	}
+
+	t.Run("meta roundtrips well", func(t *testing.T) {
+		bytes, err := meta.toBytes()
+		require.NoError(t, err)
+		require.Len(t, bytes, meta_page_size)
+
+		nm, err := loadMetaFromBytes(bytes)
+		require.NoError(t, err)
+		require.Equal(t, meta, nm)
+	})
+
+	t.Run("meta loading detects corruptions", func(t *testing.T) {
+		bytes, err := meta.toBytes()
+		require.NoError(t, err)
+		require.Len(t, bytes, meta_page_size)
+
+		// now let's corrupt bytes
+		bytes[32] += 1
+
+		nm, err := loadMetaFromBytes(bytes)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "mismatch checksum")
+		require.Nil(t, nm)
+	})
+}
+
 func TestCreate_CreatesWork(t *testing.T) {
 	f, err := ioutil.TempFile("", "")
 	require.NoError(t, err)

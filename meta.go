@@ -39,7 +39,7 @@ func newMeta() *meta {
 func (m *meta) toBytes() ([]byte, error) {
 	bytes := make([]byte, meta_page_size)
 
-	dataBytes := bytes[:meta_page_size-4]
+	dataBytes := bytes[4:]
 	enc := codec.NewEncoderBytes(&dataBytes, msgPackHandle)
 	err := enc.Encode(m)
 
@@ -47,8 +47,8 @@ func (m *meta) toBytes() ([]byte, error) {
 		return nil, err
 	}
 
-	checksum := crc32.Checksum(bytes[:meta_page_size-4], crc32Table)
-	binary.BigEndian.PutUint32(bytes[meta_page_size-4:], checksum)
+	checksum := crc32.Checksum(bytes[4:], crc32Table)
+	binary.BigEndian.PutUint32(bytes[:4], checksum)
 
 	return bytes, nil
 }
@@ -58,9 +58,9 @@ func loadMetaFromBytes(bytes []byte) (*meta, error) {
 		return nil, fmt.Errorf("failed to read meta page: invalid length (%v != %v)", len(bytes), meta_page_size)
 	}
 
-	storedChecksum := binary.BigEndian.Uint32(bytes[meta_page_size-4:])
+	storedChecksum := binary.BigEndian.Uint32(bytes[:4])
 
-	dataBytes := bytes[:meta_page_size-4]
+	dataBytes := bytes[4:]
 	foundChecksum := crc32.Checksum(dataBytes, crc32Table)
 	if storedChecksum != foundChecksum {
 		return nil, fmt.Errorf("failed to read meta page: mismatch checksum")
