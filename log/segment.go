@@ -11,7 +11,6 @@ import (
 	"hash/crc32"
 	"io"
 	"os"
-	"path/filepath"
 	"sync"
 
 	"github.com/coreos/etcd/pkg/fileutil"
@@ -30,15 +29,18 @@ const (
 
 var (
 	errOutOfSequence = errors.New("out of sequence index")
+	errLogNotFound   = errors.New("log entry not found")
+	errWrongSegment  = errors.New("log predates this segment")
 )
 
 type segment struct {
-	mu sync.RWMutex
-
 	baseIndex    uint64
 	openForWrite bool
 	config       LogConfig
 
+	writeLock sync.Mutex
+
+	offsetLock sync.RWMutex
 	offsets    []uint32
 	nextOffset uint32
 
@@ -57,9 +59,7 @@ func setSegmentHeader(b [segment_header_size]byte, baseIndex uint64, config LogC
 	binary.BigEndian.PutUint64(b[18:26], baseIndex)
 }
 
-func newSegment(dir string, baseIndex uint64, forWrite bool, config LogConfig) (*segment, error) {
-	fp := filepath.Join(dir, segmentName(baseIndex))
-
+func newSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig) (*segment, error) {
 	rdf := os.O_RDONLY
 	if forWrite {
 		rdf = os.O_RDWR
@@ -97,13 +97,14 @@ func newSegment(dir string, baseIndex uint64, forWrite bool, config LogConfig) (
 }
 
 func (s *segment) GetLog(index uint64, out []byte) (int, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.offsetLock.RLock()
 
 	if index < s.baseIndex {
-		return 0, fmt.Errorf("wrong segment, base index = %v", s.baseIndex)
+		s.offsetLock.RUnlock()
+		return 0, errWrongSegment
 	} else if index > s.baseIndex+uint64(len(s.offsets)) {
-		return 0, fmt.Errorf("wront segment, max index = %v", s.baseIndex+uint64(len(s.offsets)))
+		s.offsetLock.RUnlock()
+		return 0, errLogNotFound
 	}
 
 	li := index - s.baseIndex
@@ -115,8 +116,11 @@ func (s *segment) GetLog(index uint64, out []byte) (int, error) {
 		rl = s.offsets[li+1] - s.offsets[li]
 	}
 
+	offset := s.offsets[li]
+	s.offsetLock.RUnlock()
+
 	record := make([]byte, rl)
-	_, err := s.f.ReadAt(record, int64(s.offsets[li]))
+	_, err := s.f.ReadAt(record, int64(offset))
 	if err != nil {
 		return 0, err
 	}
@@ -210,22 +214,25 @@ func (s *segment) StoreLogs(index uint64, next func() []byte) error {
 
 	var err error
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.writeLock.Lock()
+	defer s.writeLock.Unlock()
+
+	s.offsetLock.RLock()
+	if int(index-s.baseIndex) != len(s.offsets) {
+		s.offsetLock.RUnlock()
+		return errOutOfSequence
+	}
+
+	startingOffset := s.nextOffset
+	nextOffset := s.nextOffset
+	s.offsetLock.RUnlock()
 
 	var rh [16]byte
 	var padding [8]byte
 	var writtenEntries int
 
-	if int(index-s.baseIndex) != len(s.offsets) {
-		return errOutOfSequence
-	}
-
 	s.bw.Reset(s.f)
-
-	nextOffset := s.nextOffset
-	offsetLengths := len(s.offsets)
-
+	newOffsets := make([]uint32, 0, 16)
 	for data := next(); data != nil; data = next() {
 
 		if s.config.Compression != LogCompressionNone {
@@ -254,7 +261,7 @@ func (s *segment) StoreLogs(index uint64, next func() []byte) error {
 			goto ROLLBACK
 		}
 
-		s.offsets = append(s.offsets, nextOffset)
+		newOffsets = append(newOffsets, nextOffset)
 
 		recSize := 16 + uint32(len(data)) + padl
 		nextOffset += recSize
@@ -276,13 +283,21 @@ func (s *segment) StoreLogs(index uint64, next func() []byte) error {
 		return err
 	}
 
+	s.offsetLock.Lock()
 	s.nextOffset = nextOffset
+	s.offsets = append(s.offsets, newOffsets...)
+	s.offsetLock.Unlock()
+
 	return nil
 ROLLBACK:
+
 	// roll back if we can
-	s.offsets = s.offsets[:offsetLengths]
-	s.f.Truncate(int64(s.nextOffset))
+	s.f.Truncate(int64(startingOffset))
 	return err
+}
+
+func (s *segment) Close() error {
+	return s.f.Close()
 }
 
 func decodeLength(lenField uint32) (dataBytes, padBytes uint32) {

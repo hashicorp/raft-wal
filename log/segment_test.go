@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -28,6 +29,8 @@ func TestSegment_Basic(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
+	fp := filepath.Join(dir, "testsegment")
+
 	cases := []struct {
 		name   string
 		config LogConfig
@@ -39,8 +42,9 @@ func TestSegment_Basic(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			s, err := newSegment(dir, 1, true, c.config)
+			s, err := newSegment(fp, 1, true, c.config)
 			require.NoError(t, err)
+			defer s.Close()
 
 			logs := []string{
 				"log 1",
@@ -83,6 +87,8 @@ func TestSegment_OtherBase(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
+	fp := filepath.Join(dir, "testsegment_otherbase")
+
 	cases := []struct {
 		name   string
 		config LogConfig
@@ -95,8 +101,9 @@ func TestSegment_OtherBase(t *testing.T) {
 	baseIndex := uint64(51200)
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			s, err := newSegment(dir, baseIndex, true, c.config)
+			s, err := newSegment(fp, baseIndex, true, c.config)
 			require.NoError(t, err)
+			defer s.Close()
 
 			logs := []string{
 				"log 1",
