@@ -59,30 +59,69 @@ func setSegmentHeader(b [segment_header_size]byte, baseIndex uint64, config LogC
 	binary.BigEndian.PutUint64(b[18:26], baseIndex)
 }
 
+func parseSegmentHeader(b [segment_header_size]byte) (baseIndex uint64, compression CompressLog, err error) {
+	if !bytes.Equal(b[:len(segment_magic_bytes)], segment_magic_bytes) {
+		return 0, 0, errors.New("invalid file")
+	}
+	if b[16] != segmentVersion {
+		return 0, 0, errors.New("unsupported version")
+	}
+
+	return binary.BigEndian.Uint64(b[18:26]), LogCompression(b[17]), nil
+}
+
 func newSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig) (*segment, error) {
 	rdf := os.O_RDONLY
 	if forWrite {
 		rdf = os.O_RDWR
 	}
 
-	f, err := os.OpenFile(fp, rdf|os.O_CREATE, 0600)
-	if err != nil {
-		return nil, err
-	}
+	var f *os.File
+	var err error
 
-	if err := fileutil.Preallocate(f, 64*1024*1024, true); err != nil {
-		return nil, err
-	}
+	if fileutil.Exist(fp) {
+		f, err = os.Open(fp)
+		if err != nil {
+			return nil, err
+		}
 
-	var header [segment_header_size]byte
-	setSegmentHeader(header, baseIndex, config)
-	if _, err := f.Write(header[:]); err != nil {
-		os.Remove(fp)
-		return nil, err
-	}
+		var header [segment_header_size]byte
+		_, err := f.ReadAt(header[:], 0)
+		if err != nil {
+			return nil, err
+		}
+		bi, compression, err := parseSegmentHeader(header)
+		if err != nil {
+			return nil, err
+		}
 
-	if _, err := f.Seek(segmentDataInitOffset, 0); err != nil {
-		return nil, err
+		if bi != baseIndex {
+			return nil, fmt.Errorf("mismatch base index: %v != %v", bi, baseIndex)
+		}
+
+		config.Compression = compression
+
+		// FIXME: FIND LATEST VALID OFFSET
+	} else {
+		f, err := os.OpenFile(fp, rdf|os.O_CREATE, 0600)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := fileutil.Preallocate(f, 64*1024*1024, true); err != nil {
+			return nil, err
+		}
+
+		var header [segment_header_size]byte
+		setSegmentHeader(header, baseIndex, config)
+		if _, err := f.Write(header[:]); err != nil {
+			os.Remove(fp)
+			return nil, err
+		}
+
+		if _, err := f.Seek(segmentDataInitOffset, io.SeekStart); err != nil {
+			return nil, err
+		}
 	}
 
 	return &segment{
@@ -293,8 +332,14 @@ func (s *segment) StoreLogs(index uint64, next func() []byte) error {
 	return nil
 ROLLBACK:
 
-	// roll back if we can
-	s.f.Truncate(int64(startingOffset))
+	_, err = s.f.Seek(int64(startingOffset), io.SeekStart)
+	if err != nil {
+		return err
+	}
+	err = fileutil.ZeroToEnd(s.f)
+	if err != nil {
+		return err
+	}
 	return err
 }
 
