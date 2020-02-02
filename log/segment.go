@@ -130,7 +130,8 @@ func (s *segment) GetLog(index uint64, out []byte) (int, error) {
 	}
 
 	lChecksum := binary.BigEndian.Uint32(record[8:12])
-	lLength, lPadding := decodeLength(binary.BigEndian.Uint32(record[12:16]))
+	lLength := binary.BigEndian.Uint32(record[12:16])
+	lPadding := recordPadding(lLength)
 
 	if 16+lLength+lPadding != rl {
 		return 0, fmt.Errorf("mismatch length: %v != %v", 16+lLength+lPadding, rl)
@@ -248,7 +249,8 @@ func (s *segment) StoreLogs(index uint64, next func() []byte) error {
 
 		binary.BigEndian.PutUint64(rh[:8], index)
 		binary.BigEndian.PutUint32(rh[8:12], checksum)
-		l, padl := encodeLength(uint32(len(data)))
+		l := uint32(len(data))
+		padl := recordPadding(l)
 		binary.BigEndian.PutUint32(rh[12:16], l)
 
 		if _, err = s.bw.Write(rh[:]); err != nil {
@@ -300,15 +302,7 @@ func (s *segment) Close() error {
 	return s.f.Close()
 }
 
-func decodeLength(lenField uint32) (dataBytes, padBytes uint32) {
-	data := lenField & 0x0FFFFFFF
-	padding := uint32(lenField>>28) & 0x7
-	return data, padding
-}
-
-func encodeLength(dataLength uint32) (uint32, uint32) {
-	l := uint32(dataLength & 0x0FFFFFFF)
-	padding := (8 - (dataLength & 0x7)) & 0x7
-	l |= uint32((padding & 0x7) << 28)
-	return l, uint32(padding)
+func recordPadding(length uint32) uint32 {
+	last := uint32(length) & 0x7
+	return (8 - last) & 0x7
 }

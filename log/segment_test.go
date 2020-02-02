@@ -145,7 +145,7 @@ func TestSegment_OtherBase(t *testing.T) {
 	}
 }
 
-func TestEncoding(t *testing.T) {
+func TestPadding(t *testing.T) {
 	cases := []struct {
 		input   uint32
 		padding uint32
@@ -162,13 +162,8 @@ func TestEncoding(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(fmt.Sprintf("case: %v", c.input), func(t *testing.T) {
-			l, p := encodeLength(c.input)
-			fl, fp := decodeLength(l)
-
-			t.Logf("encoding %x: 0x%x", c.input, l)
-			require.Equal(t, c.input, fl)
+			p := recordPadding(c.input)
 			require.Equal(t, c.padding, p)
-			require.Equal(t, c.padding, fp)
 		})
 	}
 }
