@@ -3,8 +3,6 @@ package log
 import (
 	"bufio"
 	"bytes"
-	"compress/gzip"
-	"compress/zlib"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -49,6 +47,9 @@ type segment struct {
 
 	f  *os.File
 	bw *bufio.Writer
+
+	persistTransformers []transformer
+	loadTransformers    []transformer
 }
 
 func segmentName(baseIndex uint64) string {
@@ -128,19 +129,20 @@ func newSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig) (*
 	}
 
 	return &segment{
-		baseIndex:    baseIndex,
-		openForWrite: forWrite,
-		config:       config,
-		offsets:      make([]uint32, 0, 512),
-		nextOffset:   segmentDataInitOffset,
-		f:            f,
-		bw:           bufio.NewWriterSize(f, 4096),
+		baseIndex:           baseIndex,
+		openForWrite:        forWrite,
+		config:              config,
+		offsets:             make([]uint32, 0, 512),
+		nextOffset:          segmentDataInitOffset,
+		f:                   f,
+		bw:                  bufio.NewWriterSize(f, 4096),
+		persistTransformers: persistTransformers(config),
+		loadTransformers:    loadTransformers(config),
 	}, nil
 }
 
 func (s *segment) untransform(data []byte) ([]byte, error) {
-	return uncompress(s.config.Compression, data)
-
+	return runTransformers(s.loadTransformers, data)
 }
 
 func (s *segment) readRecordAt(offset, rl uint32, index uint64, out []byte) (int, error) {
@@ -216,63 +218,8 @@ func (s *segment) GetLog(index uint64, out []byte) (int, error) {
 	return s.readRecordAt(offset, rl, index, out)
 }
 
-func uncompress(compressionType LogCompression, data []byte) ([]byte, error) {
-	if compressionType == LogCompressionNone {
-		return data, nil
-	}
-
-	var buf bytes.Buffer
-	var reader io.ReadCloser
-	var err error
-
-	switch compressionType {
-	case LogCompressionZlib:
-		reader, err = zlib.NewReader(bytes.NewReader(data))
-	case LogCompressionGZip:
-		reader, err = gzip.NewReader(bytes.NewReader(data))
-	default:
-		return nil, fmt.Errorf("unknown compression typoe: %v", compressionType)
-	}
-
-	if err != nil {
-		return nil, err
-	}
-
-	if _, err = io.Copy(&buf, reader); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
-
 func (s *segment) transform(data []byte) ([]byte, error) {
-	return compress(s.config.Compression, data)
-
-}
-
-func compress(compressionType LogCompression, data []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	var writer io.WriteCloser
-	switch compressionType {
-	case LogCompressionNone:
-		return data, nil
-	case LogCompressionZlib:
-		writer = zlib.NewWriter(&buf)
-	case LogCompressionGZip:
-		writer = gzip.NewWriter(&buf)
-	default:
-		return nil, fmt.Errorf("unknown compression typoe: %v", compressionType)
-	}
-
-	if _, err := writer.Write(data); err != nil {
-		return nil, err
-	}
-
-	if err := writer.Close(); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return runTransformers(s.persistTransformers, data)
 }
 
 var padding [8]byte
