@@ -1,6 +1,7 @@
 package log
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -29,8 +30,6 @@ func TestSegment_Basic(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
-	fp := filepath.Join(dir, "testsegment")
-
 	cases := []struct {
 		name   string
 		config LogConfig
@@ -42,6 +41,8 @@ func TestSegment_Basic(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			fp := filepath.Join(dir, "testsegment_"+c.name)
+
 			s, err := newSegment(fp, 1, true, c.config)
 			require.NoError(t, err)
 			defer s.Close()
@@ -87,8 +88,6 @@ func TestSegment_OtherBase(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
-	fp := filepath.Join(dir, "testsegment_otherbase")
-
 	cases := []struct {
 		name   string
 		config LogConfig
@@ -101,6 +100,7 @@ func TestSegment_OtherBase(t *testing.T) {
 	baseIndex := uint64(51200)
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			fp := filepath.Join(dir, "testsegment_"+c.name)
 			s, err := newSegment(fp, baseIndex, true, c.config)
 			require.NoError(t, err)
 			defer s.Close()
@@ -143,6 +143,47 @@ func TestSegment_OtherBase(t *testing.T) {
 			require.Equal(t, errOutOfSequence, err)
 		})
 	}
+}
+
+func TestSegment_SealingWorks(t *testing.T) {
+	dir, err := ioutil.TempDir("", "testsegment")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	fp := filepath.Join(dir, "testsegment_otherbase")
+
+	s, err := newSegment(fp, 1, true, LogConfig{})
+	require.NoError(t, err)
+	defer s.Close()
+
+	logs := []string{
+		"log 1",
+		"log 2",
+		"log 3",
+	}
+
+	err = s.StoreLogs(1, stringsIterator(logs))
+	require.NoError(t, err)
+
+	err = s.Seal()
+	require.NoError(t, err)
+
+	// inspect seal flag
+	var sealHeader [5]byte
+	_, err = s.f.ReadAt(sealHeader[:], 26)
+	require.NoError(t, err)
+
+	require.Equal(t, byte(sealFlag), sealHeader[0])
+
+	indexOffset := binary.BigEndian.Uint32(sealHeader[1:])
+
+	indexData := make([]byte, 512)
+	n, err := s.readRecordAt(indexOffset, 0, indexSentinelIndex, indexData)
+	require.NoError(t, err)
+
+	offsets, err := parseIndexData(indexData[:n])
+	require.NoError(t, err)
+	require.Equal(t, s.offsets, offsets)
 }
 
 func TestPadding(t *testing.T) {

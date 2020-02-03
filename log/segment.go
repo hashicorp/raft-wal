@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"math"
 	"os"
 	"sync"
 
@@ -25,6 +26,8 @@ const (
 	segment_header_size   = 62
 	segmentVersion        = 1
 	segmentDataInitOffset = 512
+	indexSentinelIndex    = math.MaxUint64
+	sealFlag              = 0xFF
 )
 
 var (
@@ -59,7 +62,7 @@ func setSegmentHeader(b [segment_header_size]byte, baseIndex uint64, config LogC
 	binary.BigEndian.PutUint64(b[18:26], baseIndex)
 }
 
-func parseSegmentHeader(b [segment_header_size]byte) (baseIndex uint64, compression CompressLog, err error) {
+func parseSegmentHeader(b [segment_header_size]byte) (baseIndex uint64, compression LogCompression, err error) {
 	if !bytes.Equal(b[:len(segment_magic_bytes)], segment_magic_bytes) {
 		return 0, 0, errors.New("invalid file")
 	}
@@ -101,9 +104,9 @@ func newSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig) (*
 
 		config.Compression = compression
 
-		// FIXME: FIND LATEST VALID OFFSET
+		// FIXME: FIND LATEST VALID OFFSET, and rebuild index
 	} else {
-		f, err := os.OpenFile(fp, rdf|os.O_CREATE, 0600)
+		f, err = os.OpenFile(fp, rdf|os.O_CREATE, 0600)
 		if err != nil {
 			return nil, err
 		}
@@ -135,28 +138,22 @@ func newSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig) (*
 	}, nil
 }
 
-func (s *segment) GetLog(index uint64, out []byte) (int, error) {
-	s.offsetLock.RLock()
+func (s *segment) untransform(data []byte) ([]byte, error) {
+	return uncompress(s.config.Compression, data)
 
-	if index < s.baseIndex {
-		s.offsetLock.RUnlock()
-		return 0, errWrongSegment
-	} else if index > s.baseIndex+uint64(len(s.offsets)) {
-		s.offsetLock.RUnlock()
-		return 0, errLogNotFound
+}
+
+func (s *segment) readRecordAt(offset, rl uint32, index uint64, out []byte) (int, error) {
+	if rl == 0 {
+		var l [4]byte
+		_, err := s.f.ReadAt(l[:], int64(offset+12))
+		if err != nil {
+			return 0, err
+		}
+
+		lf := binary.BigEndian.Uint32(l[:])
+		rl = 16 + lf + recordPadding(lf)
 	}
-
-	li := index - s.baseIndex
-
-	var rl uint32
-	if li == uint64(len(s.offsets)-1) {
-		rl = s.nextOffset - s.offsets[li]
-	} else {
-		rl = s.offsets[li+1] - s.offsets[li]
-	}
-
-	offset := s.offsets[li]
-	s.offsetLock.RUnlock()
 
 	record := make([]byte, rl)
 	_, err := s.f.ReadAt(record, int64(offset))
@@ -181,7 +178,7 @@ func (s *segment) GetLog(index uint64, out []byte) (int, error) {
 		return 0, fmt.Errorf("checksums mismatch")
 	}
 
-	data, err := uncompress(s.config.Compression, record[16:16+lLength])
+	data, err := s.untransform(record[16 : 16+lLength])
 	if err != nil {
 		return 0, err
 	}
@@ -191,6 +188,32 @@ func (s *segment) GetLog(index uint64, out []byte) (int, error) {
 		return n, fmt.Errorf("record too small: %v != %v; %v", n, lLength, record)
 	}
 	return n, nil
+
+}
+func (s *segment) GetLog(index uint64, out []byte) (int, error) {
+	s.offsetLock.RLock()
+
+	if index < s.baseIndex {
+		s.offsetLock.RUnlock()
+		return 0, errWrongSegment
+	} else if index > s.baseIndex+uint64(len(s.offsets)) {
+		s.offsetLock.RUnlock()
+		return 0, errLogNotFound
+	}
+
+	li := index - s.baseIndex
+
+	var rl uint32
+	if li == uint64(len(s.offsets)-1) {
+		rl = s.nextOffset - s.offsets[li]
+	} else {
+		rl = s.offsets[li+1] - s.offsets[li]
+	}
+
+	offset := s.offsets[li]
+	s.offsetLock.RUnlock()
+
+	return s.readRecordAt(offset, rl, index, out)
 }
 
 func uncompress(compressionType LogCompression, data []byte) ([]byte, error) {
@@ -222,6 +245,11 @@ func uncompress(compressionType LogCompression, data []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+func (s *segment) transform(data []byte) ([]byte, error) {
+	return compress(s.config.Compression, data)
+
+}
+
 func compress(compressionType LogCompression, data []byte) ([]byte, error) {
 	var buf bytes.Buffer
 	var writer io.WriteCloser
@@ -247,6 +275,39 @@ func compress(compressionType LogCompression, data []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+var padding [8]byte
+
+func (s *segment) writeRecord(index uint64, data []byte) (uint32, error) {
+	var rh [16]byte
+	var err error
+
+	data, err = s.transform(data)
+	if err != nil {
+		return 0, err
+	}
+
+	// prepare header
+	checksum := crc32.Checksum(data, crc32Table)
+
+	binary.BigEndian.PutUint64(rh[:8], index)
+	binary.BigEndian.PutUint32(rh[8:12], checksum)
+	l := uint32(len(data))
+	padl := recordPadding(l)
+	binary.BigEndian.PutUint32(rh[12:16], l)
+
+	if _, err := s.bw.Write(rh[:]); err != nil {
+		return 0, err
+	}
+	if _, err := s.bw.Write(data); err != nil {
+		return 0, err
+	}
+	if _, err := s.bw.Write(padding[:padl]); err != nil {
+		return 0, err
+	}
+
+	return 16 + uint32(len(data)) + padl, nil
+}
+
 func (s *segment) StoreLogs(index uint64, next func() []byte) error {
 	if !s.openForWrite {
 		return fmt.Errorf("file is ready only")
@@ -267,44 +328,19 @@ func (s *segment) StoreLogs(index uint64, next func() []byte) error {
 	nextOffset := s.nextOffset
 	s.offsetLock.RUnlock()
 
-	var rh [16]byte
-	var padding [8]byte
 	var writtenEntries int
 
 	s.bw.Reset(s.f)
+
 	newOffsets := make([]uint32, 0, 16)
 	for data := next(); data != nil; data = next() {
-
-		if s.config.Compression != LogCompressionNone {
-			source := data
-			data, err = compress(s.config.Compression, source)
-			if err != nil {
-				return err
-			}
-		}
-
-		// prepare header
-		checksum := crc32.Checksum(data, crc32Table)
-
-		binary.BigEndian.PutUint64(rh[:8], index)
-		binary.BigEndian.PutUint32(rh[8:12], checksum)
-		l := uint32(len(data))
-		padl := recordPadding(l)
-		binary.BigEndian.PutUint32(rh[12:16], l)
-
-		if _, err = s.bw.Write(rh[:]); err != nil {
-			goto ROLLBACK
-		}
-		if _, err = s.bw.Write(data); err != nil {
-			goto ROLLBACK
-		}
-		if _, err = s.bw.Write(padding[:padl]); err != nil {
+		recSize, err := s.writeRecord(index, data)
+		if err != nil {
 			goto ROLLBACK
 		}
 
 		newOffsets = append(newOffsets, nextOffset)
 
-		recSize := 16 + uint32(len(data)) + padl
 		nextOffset += recSize
 		writtenEntries++
 		index++
@@ -316,12 +352,10 @@ func (s *segment) StoreLogs(index uint64, next func() []byte) error {
 
 	if err = s.bw.Flush(); err != nil {
 		goto ROLLBACK
-		return err
 	}
 
-	if err = fileutil.Fsync(s.f); err != nil {
+	if err = fileutil.Fdatasync(s.f); err != nil {
 		goto ROLLBACK
-		return err
 	}
 
 	s.offsetLock.Lock()
@@ -345,6 +379,77 @@ ROLLBACK:
 
 func (s *segment) Close() error {
 	return s.f.Close()
+}
+
+func parseIndexData(data []byte) ([]uint32, error) {
+	len := binary.BigEndian.Uint32(data[:4])
+	out := make([]uint32, len)
+	err := binary.Read(bytes.NewReader(data[4:]), binary.BigEndian, &out)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *segment) indexData() ([]byte, error) {
+	var buf bytes.Buffer
+
+	var lenBytes [4]byte
+	binary.BigEndian.PutUint32(lenBytes[:], uint32(len(s.offsets)))
+	if _, err := buf.Write(lenBytes[:]); err != nil {
+		return nil, err
+	}
+
+	if err := binary.Write(&buf, binary.BigEndian, s.offsets); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func (s *segment) writeIndex() (uint32, error) {
+	s.offsetLock.RLock()
+	defer s.offsetLock.RUnlock()
+
+	offset := s.nextOffset
+	data, err := s.indexData()
+	if err != nil {
+		return 0, err
+	}
+
+	_, err = s.writeRecord(indexSentinelIndex, data)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.bw.Flush(); err != nil {
+		return 0, err
+	}
+
+	return offset, nil
+}
+
+func (s *segment) Seal() error {
+	s.writeLock.Lock()
+	defer s.writeLock.Unlock()
+
+	offset, err := s.writeIndex()
+	if err != nil {
+		return err
+	}
+
+	if err != fileutil.Fdatasync(s.f) {
+		return err
+	}
+
+	var b [5]byte
+	b[0] = sealFlag
+	binary.BigEndian.PutUint32(b[1:], offset)
+
+	if _, err := s.f.WriteAt(b[:], 26); err != nil {
+		return err
+	}
+
+	return fileutil.Fdatasync(s.f)
 }
 
 func recordPadding(length uint32) uint32 {
