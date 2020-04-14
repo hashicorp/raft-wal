@@ -32,18 +32,19 @@ func TestSegment_Basic(t *testing.T) {
 
 	cases := []struct {
 		name   string
-		config LogConfig
+		config UserLogConfig
 	}{
-		{"basic", LogConfig{}},
-		{"compressed_zlib", LogConfig{Compression: LogCompressionZlib}},
-		{"compressed_gzip", LogConfig{Compression: LogCompressionGZip}},
+		{"basic", UserLogConfig{}},
+		{"compressed_zlib", UserLogConfig{Compression: LogCompressionZlib}},
+		{"compressed_gzip", UserLogConfig{Compression: LogCompressionGZip}},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			fp := filepath.Join(dir, "testsegment_"+c.name)
+			config := LogConfig{UserLogConfig: c.config}
 
-			s, err := newSegment(fp, 1, true, c.config)
+			s, err := newSegment(fp, 1, true, config)
 			require.NoError(t, err)
 			defer s.Close()
 
@@ -90,18 +91,19 @@ func TestSegment_OtherBase(t *testing.T) {
 
 	cases := []struct {
 		name   string
-		config LogConfig
+		config UserLogConfig
 	}{
-		{"basic", LogConfig{}},
-		{"compressed_zlib", LogConfig{Compression: LogCompressionZlib}},
-		{"compressed_gzip", LogConfig{Compression: LogCompressionGZip}},
+		{"basic", UserLogConfig{}},
+		{"compressed_zlib", UserLogConfig{Compression: LogCompressionZlib}},
+		{"compressed_gzip", UserLogConfig{Compression: LogCompressionGZip}},
 	}
 
 	baseIndex := uint64(51200)
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			fp := filepath.Join(dir, "testsegment_"+c.name)
-			s, err := newSegment(fp, baseIndex, true, c.config)
+			config := LogConfig{UserLogConfig: c.config}
+			s, err := newSegment(fp, baseIndex, true, config)
 			require.NoError(t, err)
 			defer s.Close()
 

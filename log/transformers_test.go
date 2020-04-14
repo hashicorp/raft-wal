@@ -18,8 +18,8 @@ func TestCompressions(t *testing.T) {
 	for _, c := range cases {
 		t.Run(fmt.Sprintf("case :%v", c), func(t *testing.T) {
 			input := []byte("MY ORIGINAL DATA")
-			pt := persistTransformers(LogConfig{Compression: c})
-			lt := loadTransformers(LogConfig{Compression: c})
+			pt := persistTransformers(UserLogConfig{Compression: c})
+			lt := loadTransformers(UserLogConfig{Compression: c})
 
 			ptr, err := runTransformers(pt, input)
 			require.NoError(t, err)

@@ -22,7 +22,7 @@ func runTransformers(transformers []transformer, data []byte) ([]byte, error) {
 	return data, nil
 }
 
-func persistTransformers(config LogConfig) []transformer {
+func persistTransformers(config UserLogConfig) []transformer {
 	tr := []transformer{}
 	if config.Compression != LogCompressionNone {
 		tr = append(tr, compress(config.Compression))
@@ -30,7 +30,7 @@ func persistTransformers(config LogConfig) []transformer {
 	return tr
 }
 
-func loadTransformers(config LogConfig) []transformer {
+func loadTransformers(config UserLogConfig) []transformer {
 	tr := []transformer{}
 	if config.Compression != LogCompressionNone {
 		tr = append(tr, uncompress(config.Compression))

@@ -26,12 +26,12 @@ type Log interface {
 }
 
 type log struct {
-	mu sync.RWMutex
+	mu     sync.RWMutex
+	dir    string
+	config LogConfig
 
 	firstIndex uint64
 	lastIndex  uint64
-
-	segmentChunkSize uint64
 
 	segmentBases  []uint64
 	segments      []*segment
@@ -40,11 +40,8 @@ type log struct {
 	firstIndexUpdatedCallback func(uint64) error
 }
 
-type LogConfig struct {
-	KnownFirstIndex  uint64
+type UserLogConfig struct {
 	SegmentChunkSize uint64
-
-	FirstIndexUpdatedCallback func(uint64) error
 
 	NoSync bool
 
@@ -53,10 +50,24 @@ type LogConfig struct {
 	TruncateOnFailure bool
 }
 
-func NewLog(dir string, c LogConfig) (Log, error) {
+type LogConfig struct {
+	KnownFirstIndex uint64
+
+	FirstIndexUpdatedCallback func(uint64) error
+
+	UserLogConfig
+}
+
+const defaultLogChunkSize = 4096
+
+func NewLog(dir string, c LogConfig) (*log, error) {
 	bases, err := segmentsIn(dir)
 	if err != nil {
 		return nil, err
+	}
+
+	if c.SegmentChunkSize == 0 {
+		c.SegmentChunkSize = defaultLogChunkSize
 	}
 
 	var active *segment
@@ -70,11 +81,12 @@ func NewLog(dir string, c LogConfig) (Log, error) {
 	}
 
 	l := &log{
+		dir:                       dir,
 		firstIndex:                c.KnownFirstIndex,
-		segmentChunkSize:          c.SegmentChunkSize,
 		firstIndexUpdatedCallback: c.FirstIndexUpdatedCallback,
 		segmentBases:              bases,
 		activeSegment:             active,
+		config:                    c,
 	}
 
 	return l, nil
@@ -88,9 +100,6 @@ func (l *log) FirstIndex() uint64 {
 }
 
 func (l *log) updateIndexs(firstWriteIndex uint64, count int) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
 	if l.firstIndex == 0 && count != 0 {
 		l.firstIndex = firstWriteIndex
 		l.lastIndex = uint64(count)
@@ -140,8 +149,16 @@ func (l *log) GetLog(index uint64) ([]byte, error) {
 }
 
 func (l *log) StoreLogs(nextIndex uint64, next func() []byte) error {
-	if nextIndex != l.LastIndex()+1 {
-		return fmt.Errorf("out of order insertion")
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if nextIndex != l.lastIndex+1 {
+		return fmt.Errorf("out of order insertion %v != %v", nextIndex, l.lastIndex+1)
+	}
+
+	err := l.maybeStartNewSegment()
+	if err != nil {
+		return err
 	}
 
 	entries, err := l.activeSegment.StoreLogs(nextIndex, next)
@@ -151,6 +168,31 @@ func (l *log) StoreLogs(nextIndex uint64, next func() []byte) error {
 	}
 
 	return l.updateIndexs(nextIndex, entries)
+}
+
+func (l *log) maybeStartNewSegment() error {
+	s := l.activeSegment
+
+	if s.nextIndex()-s.baseIndex < l.config.SegmentChunkSize {
+		return nil
+	}
+
+	err := l.activeSegment.Seal()
+	if err != nil {
+		return err
+	}
+	s.Close()
+
+	nextBase := s.nextIndex()
+	active, err := newSegment(filepath.Join(l.dir, segmentName(nextBase)), nextBase, true, l.config)
+	if err != nil {
+		return err
+	}
+
+	l.segmentBases = append(l.segmentBases, nextBase)
+	l.activeSegment = active
+
+	return nil
 }
 
 func (l *log) TruncateTail(index uint64) error {

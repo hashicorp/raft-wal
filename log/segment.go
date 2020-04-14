@@ -132,8 +132,8 @@ func newSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig) (*
 		nextOffset:          segmentDataInitOffset,
 		f:                   f,
 		bw:                  bufio.NewWriterSize(f, 4096),
-		persistTransformers: persistTransformers(config),
-		loadTransformers:    loadTransformers(config),
+		persistTransformers: persistTransformers(config.UserLogConfig),
+		loadTransformers:    loadTransformers(config.UserLogConfig),
 	}, nil
 }
 
@@ -371,7 +371,7 @@ func (s *segment) writeIndex() (uint32, error) {
 	return offset, nil
 }
 
-func (s *segment) lastIndex() uint64 {
+func (s *segment) nextIndex() uint64 {
 	s.offsetLock.RLock()
 	defer s.offsetLock.RUnlock()
 

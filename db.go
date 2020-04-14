@@ -12,17 +12,15 @@ import (
 	"github.com/notnoop/raft-wal2/log"
 )
 
-const (
-	logChunkSize = 4096
-)
-
 var (
 	msgPackHandle = &codec.MsgpackHandle{}
 	crc32Table    = crc32.MakeTable(crc32.Castagnoli)
 )
 
+type LogConfig = log.UserLogConfig
+
 func New(dir string) (*wal, error) {
-	return newWAL(dir, logChunkSize)
+	return NewWAL(dir, LogConfig{})
 }
 
 var _ raft.LogStore = (*wal)(nil)
@@ -40,7 +38,7 @@ type wal struct {
 	dir string
 }
 
-func newWAL(dir string, logChunkSize uint32) (*wal, error) {
+func NewWAL(dir string, c LogConfig) (*wal, error) {
 	return nil, fmt.Errorf("not implemented yet")
 
 }

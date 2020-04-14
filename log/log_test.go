@@ -16,8 +16,10 @@ func TestBasic(t *testing.T) {
 
 	lc := LogConfig{
 		FirstIndexUpdatedCallback: func(uint64) error { return nil },
-		NoSync:                    false,
-		Compression:               LogCompressionNone,
+		UserLogConfig: UserLogConfig{
+			NoSync:      false,
+			Compression: LogCompressionNone,
+		},
 	}
 
 	log, err := NewLog(tmpdir, lc)
@@ -43,5 +45,58 @@ func TestBasic(t *testing.T) {
 		d, err := log.GetLog(uint64(i + 1))
 		require.NoError(t, err)
 		require.Equal(t, data[i], string(d))
+	}
+}
+
+func Test_CreatesSegments_AtInsertions(t *testing.T) {
+	tmpdir, err := ioutil.TempDir("", "raftwal")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpdir)
+
+	lc := LogConfig{
+		FirstIndexUpdatedCallback: func(uint64) error { return nil },
+		UserLogConfig: UserLogConfig{
+			SegmentChunkSize: 4,
+			NoSync:           false,
+			Compression:      LogCompressionNone,
+		},
+	}
+
+	currSegments := func() []uint64 {
+		t.Helper()
+
+		ss, err := segmentsIn(tmpdir)
+		require.NoError(t, err)
+		return ss
+	}
+
+	require.Equal(t, []uint64{}, currSegments())
+
+	log, err := NewLog(tmpdir, lc)
+	require.NoError(t, err)
+
+	require.Equal(t, []uint64{1}, currSegments())
+
+	splits := []uint64{
+		1,
+		5,
+		9,
+		13,
+		17,
+	}
+
+	for i := uint64(1); i < 20; i++ {
+		d := fmt.Sprintf("data %v", i)
+		err := log.StoreLogs(i, stringsIterator([]string{d}))
+		require.NoError(t, err)
+
+		ss, err := segmentsIn(tmpdir)
+		require.NoError(t, err)
+
+		len := int((i-1)/4 + 1)
+		require.Len(t, ss, len)
+		require.Equal(t, splits[:len], ss)
+
+		require.Equal(t, splits[:len], log.segmentBases)
 	}
 }
