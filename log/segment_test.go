@@ -53,7 +53,7 @@ func TestSegment_Basic(t *testing.T) {
 				"log 3",
 			}
 
-			err = s.StoreLogs(1, stringsIterator(logs))
+			_, err = s.StoreLogs(1, stringsIterator(logs))
 			require.NoError(t, err)
 
 			moreLogs := []string{
@@ -61,7 +61,7 @@ func TestSegment_Basic(t *testing.T) {
 				"log 5",
 				"log 6",
 			}
-			err = s.StoreLogs(4, stringsIterator(moreLogs))
+			_, err = s.StoreLogs(4, stringsIterator(moreLogs))
 			require.NoError(t, err)
 
 			logs = append(logs, moreLogs...)
@@ -72,11 +72,11 @@ func TestSegment_Basic(t *testing.T) {
 				require.Equal(t, []byte(l), out[:n])
 			}
 
-			err = s.StoreLogs(1, stringsIterator(moreLogs))
+			_, err = s.StoreLogs(1, stringsIterator(moreLogs))
 			require.Error(t, err)
 			require.Equal(t, errOutOfSequence, err)
 
-			err = s.StoreLogs(1000, stringsIterator(moreLogs))
+			_, err = s.StoreLogs(1000, stringsIterator(moreLogs))
 			require.Error(t, err)
 			require.Equal(t, errOutOfSequence, err)
 		})
@@ -111,7 +111,7 @@ func TestSegment_OtherBase(t *testing.T) {
 				"log 3",
 			}
 
-			err = s.StoreLogs(baseIndex, stringsIterator(logs))
+			_, err = s.StoreLogs(baseIndex, stringsIterator(logs))
 			require.NoError(t, err)
 
 			moreLogs := []string{
@@ -119,7 +119,7 @@ func TestSegment_OtherBase(t *testing.T) {
 				"log 5",
 				"log 6",
 			}
-			err = s.StoreLogs(baseIndex+3, stringsIterator(moreLogs))
+			_, err = s.StoreLogs(baseIndex+3, stringsIterator(moreLogs))
 			require.NoError(t, err)
 
 			logs = append(logs, moreLogs...)
@@ -130,15 +130,15 @@ func TestSegment_OtherBase(t *testing.T) {
 				require.Equal(t, []byte(l), out[:n])
 			}
 
-			err = s.StoreLogs(1, stringsIterator(moreLogs))
+			_, err = s.StoreLogs(1, stringsIterator(moreLogs))
 			require.Error(t, err)
 			require.Equal(t, errOutOfSequence, err)
 
-			err = s.StoreLogs(baseIndex, stringsIterator(moreLogs))
+			_, err = s.StoreLogs(baseIndex, stringsIterator(moreLogs))
 			require.Error(t, err)
 			require.Equal(t, errOutOfSequence, err)
 
-			err = s.StoreLogs(baseIndex+1000, stringsIterator(moreLogs))
+			_, err = s.StoreLogs(baseIndex+1000, stringsIterator(moreLogs))
 			require.Error(t, err)
 			require.Equal(t, errOutOfSequence, err)
 		})
@@ -162,7 +162,7 @@ func TestSegment_SealingWorks(t *testing.T) {
 		"log 3",
 	}
 
-	err = s.StoreLogs(1, stringsIterator(logs))
+	_, err = s.StoreLogs(1, stringsIterator(logs))
 	require.NoError(t, err)
 
 	err = s.Seal()

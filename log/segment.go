@@ -52,10 +52,6 @@ type segment struct {
 	loadTransformers    []transformer
 }
 
-func segmentName(baseIndex uint64) string {
-	return fmt.Sprintf("wal-%016x.log", baseIndex)
-}
-
 func setSegmentHeader(b [segment_header_size]byte, baseIndex uint64, config LogConfig) {
 	copy(b[:], segment_magic_bytes)
 	b[16] = segmentVersion
@@ -255,9 +251,9 @@ func (s *segment) writeRecord(index uint64, data []byte) (uint32, error) {
 	return 16 + uint32(len(data)) + padl, nil
 }
 
-func (s *segment) StoreLogs(index uint64, next func() []byte) error {
+func (s *segment) StoreLogs(index uint64, next func() []byte) (int, error) {
 	if !s.openForWrite {
-		return fmt.Errorf("file is ready only")
+		return 0, fmt.Errorf("file is ready only")
 	}
 
 	var err error
@@ -268,7 +264,7 @@ func (s *segment) StoreLogs(index uint64, next func() []byte) error {
 	s.offsetLock.RLock()
 	if int(index-s.baseIndex) != len(s.offsets) {
 		s.offsetLock.RUnlock()
-		return errOutOfSequence
+		return 0, errOutOfSequence
 	}
 
 	startingOffset := s.nextOffset
@@ -294,7 +290,7 @@ func (s *segment) StoreLogs(index uint64, next func() []byte) error {
 	}
 
 	if writtenEntries == 0 {
-		return nil
+		return 0, nil
 	}
 
 	if err = s.bw.Flush(); err != nil {
@@ -310,18 +306,18 @@ func (s *segment) StoreLogs(index uint64, next func() []byte) error {
 	s.offsets = append(s.offsets, newOffsets...)
 	s.offsetLock.Unlock()
 
-	return nil
+	return writtenEntries, nil
 ROLLBACK:
 
 	_, err = s.f.Seek(int64(startingOffset), io.SeekStart)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	err = fileutil.ZeroToEnd(s.f)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return err
+	return 0, err
 }
 
 func (s *segment) Close() error {
@@ -373,6 +369,13 @@ func (s *segment) writeIndex() (uint32, error) {
 	}
 
 	return offset, nil
+}
+
+func (s *segment) lastIndex() uint64 {
+	s.offsetLock.RLock()
+	defer s.offsetLock.RUnlock()
+
+	return s.baseIndex + uint64(len(s.offsets))
 }
 
 func (s *segment) Seal() error {

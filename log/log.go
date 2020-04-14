@@ -2,6 +2,7 @@ package log
 
 import (
 	"fmt"
+	"path/filepath"
 	"sync"
 )
 
@@ -32,6 +33,7 @@ type log struct {
 
 	segmentChunkSize uint64
 
+	segmentBases  []uint64
 	segments      []*segment
 	activeSegment *segment
 
@@ -51,11 +53,28 @@ type LogConfig struct {
 	TruncateOnFailure bool
 }
 
-func NewLog(dir string, c *LogConfig) (Log, error) {
+func NewLog(dir string, c LogConfig) (Log, error) {
+	bases, err := segmentsIn(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	var active *segment
+	if len(bases) == 0 {
+		bases = append(bases, 1)
+		active, err = newSegment(filepath.Join(dir, segmentName(1)), 1, true, c)
+		if err != nil {
+			return nil, err
+		}
+
+	}
+
 	l := &log{
 		firstIndex:                c.KnownFirstIndex,
 		segmentChunkSize:          c.SegmentChunkSize,
 		firstIndexUpdatedCallback: c.FirstIndexUpdatedCallback,
+		segmentBases:              bases,
+		activeSegment:             active,
 	}
 
 	return l, nil
@@ -68,6 +87,20 @@ func (l *log) FirstIndex() uint64 {
 	return l.firstIndex
 }
 
+func (l *log) updateIndexs(firstWriteIndex uint64, count int) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.firstIndex == 0 && count != 0 {
+		l.firstIndex = firstWriteIndex
+		l.lastIndex = uint64(count)
+	} else {
+		l.lastIndex += uint64(count)
+	}
+
+	return nil
+}
+
 func (l *log) LastIndex() uint64 {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
@@ -75,20 +108,49 @@ func (l *log) LastIndex() uint64 {
 	return l.lastIndex
 }
 
-func (l *log) GetLog(index uint64) ([]byte, error) {
+func (l *log) segmentFor(index uint64) (*segment, error) {
 	l.mu.RLock()
+	defer l.mu.RUnlock()
+
 	firstIdx, lastIdx := l.firstIndex, l.lastIndex
-	l.mu.RUnlock()
 
 	if index < firstIdx || index > lastIdx {
 		return nil, fmt.Errorf("out of range: %v not in [%v, %v]", index, firstIdx, lastIdx)
 	}
 
-	panic("not implemented")
+	if index >= l.activeSegment.baseIndex {
+		return l.activeSegment, nil
+	}
+	panic("not supported yet")
+}
+
+func (l *log) GetLog(index uint64) ([]byte, error) {
+	s, err := l.segmentFor(index)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]byte, 1024*1024)
+	n, err := s.GetLog(index, out)
+	if err != nil {
+		return nil, err
+	}
+
+	return out[:n], nil
 }
 
 func (l *log) StoreLogs(nextIndex uint64, next func() []byte) error {
-	panic("not implemented")
+	if nextIndex != l.LastIndex()+1 {
+		return fmt.Errorf("out of order insertion")
+	}
+
+	entries, err := l.activeSegment.StoreLogs(nextIndex, next)
+	if err != nil {
+		l.updateIndexs(nextIndex, entries)
+		return err
+	}
+
+	return l.updateIndexs(nextIndex, entries)
 }
 
 func (l *log) TruncateTail(index uint64) error {

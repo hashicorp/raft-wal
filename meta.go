@@ -8,7 +8,7 @@ import (
 	"os"
 
 	"github.com/coreos/etcd/pkg/fileutil"
-	"github.com/ugorji/go/codec"
+	"github.com/hashicorp/go-msgpack/codec"
 )
 
 const (
