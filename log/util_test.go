@@ -41,3 +41,45 @@ func TestSearchSegmentIndex(t *testing.T) {
 		})
 	}
 }
+
+func TestComputeSegmentsToDelete(t *testing.T) {
+	offsets := []uint64{1, 5, 8, 100, 1000, 1002, 1003}
+
+	cases := []struct {
+		newFirstIndex uint64
+		toDelete      int
+	}{
+		{1, 0},
+		{2, 0},
+		{4, 0},
+		{5, 1},
+		{6, 1},
+		{7, 1},
+		{8, 2},
+		{99, 2},
+		{100, 3},
+		{101, 3},
+		{999, 3},
+		{1001, 4},
+		{1002, 5},
+		{1003, 6},
+		{1004, 6},
+		{99999, 6},
+	}
+
+	for _, c := range cases {
+		t.Run(fmt.Sprintf("case %v", c.newFirstIndex), func(t *testing.T) {
+			toDelete := computeSegmentsToDelete(offsets, c.newFirstIndex)
+			require.Equal(t, c.toDelete, toDelete)
+			require.Less(t, toDelete, len(offsets))
+		})
+	}
+
+	// some odd cases
+	require.Equal(t, 0, computeSegmentsToDelete([]uint64{1}, 1))
+	require.Equal(t, 0, computeSegmentsToDelete([]uint64{1}, 5))
+
+	require.Equal(t, 0, computeSegmentsToDelete([]uint64{5}, 4))
+	require.Equal(t, 0, computeSegmentsToDelete([]uint64{5}, 5))
+	require.Equal(t, 0, computeSegmentsToDelete([]uint64{5}, 6))
+}

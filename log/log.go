@@ -2,6 +2,7 @@ package log
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 )
@@ -90,6 +91,9 @@ func NewLog(dir string, c LogConfig) (*log, error) {
 		activeSegment:             active,
 		config:                    c,
 	}
+
+	// delete old files if they present from older run
+	l.deleteOldLogFiles()
 
 	return l, nil
 }
@@ -232,5 +236,21 @@ func (l *log) TruncateHead(index uint64) error {
 		return err
 	}
 	l.firstIndex = index + 1
+
+	l.deleteOldLogFiles()
+
 	return nil
+}
+
+func (l *log) deleteOldLogFiles() {
+	delIdx := computeSegmentsToDelete(l.segmentBases, l.firstIndex)
+
+	toDelete, toKeep := l.segmentBases[:delIdx], l.segmentBases[delIdx:]
+
+	for _, sb := range toDelete {
+		fp := filepath.Join(l.dir, segmentName(sb))
+		os.Remove(fp)
+	}
+
+	l.segmentBases = toKeep
 }
