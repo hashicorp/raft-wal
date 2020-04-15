@@ -138,10 +138,46 @@ func openSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig) (
 			return nil, fmt.Errorf("failed to parse index data: %v", err)
 		}
 	} else {
-		// FIXME: parse and validate
+		err := s.loadUnsealedContent()
+		if err != nil {
+			return nil, fmt.Errorf("failed to load segment: %v", err)
+		}
 	}
 
 	return s, nil
+}
+
+func (s *segment) loadUnsealedContent() error {
+	offsets := make([]uint32, 0, 512)
+	nextOffset := uint32(segmentDataInitOffset)
+	nextIndex := s.baseIndex
+
+	var data [16]byte
+	for {
+		_, err := s.f.ReadAt(data[:], int64(nextOffset))
+		if err != nil {
+			return err
+		}
+
+		foundIndex := binary.BigEndian.Uint64(data[:8])
+		dataLength := binary.BigEndian.Uint32(data[12:16])
+
+		if foundIndex == 0 || foundIndex == indexSentinelIndex {
+			break
+		}
+
+		if foundIndex != nextIndex {
+			return fmt.Errorf("mismatched index expected %v != %v", nextIndex, foundIndex)
+		}
+
+		offsets = append(offsets, nextOffset)
+		nextOffset += recordSize(dataLength)
+		nextIndex++
+	}
+
+	s.offsets = offsets
+	s.nextOffset = nextOffset
+	return nil
 }
 
 func createSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig) (*segment, error) {
@@ -196,7 +232,7 @@ func (s *segment) readRecordAt(offset, rl uint32, index uint64, out []byte) (int
 		}
 
 		lf := binary.BigEndian.Uint32(l[:])
-		rl = 16 + lf + recordPadding(lf)
+		rl = recordSize(lf)
 	}
 
 	record := make([]byte, rl)
@@ -294,7 +330,11 @@ func (s *segment) writeRecord(index uint64, data []byte) (uint32, error) {
 		return 0, err
 	}
 
-	return 16 + uint32(len(data)) + padl, nil
+	return recordSize(uint32(len(data))), nil
+}
+
+func recordSize(dataLen uint32) uint32 {
+	return 16 + dataLen + recordPadding(dataLen)
 }
 
 func (s *segment) StoreLogs(index uint64, next func() []byte) (int, error) {

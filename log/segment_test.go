@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var testLogConfig = LogConfig{UserLogConfig: UserLogConfig{NoSync: true}}
+
 func stringsIterator(d []string) func() []byte {
 	i := 0
 	return func() []byte {
@@ -154,7 +156,7 @@ func TestSegment_SealingWorks(t *testing.T) {
 
 	fp := filepath.Join(dir, "testsegment_otherbase")
 
-	s, err := newSegment(fp, 1, true, LogConfig{})
+	s, err := newSegment(fp, 1, true, testLogConfig)
 	require.NoError(t, err)
 	defer s.Close()
 
@@ -188,14 +190,14 @@ func TestSegment_SealingWorks(t *testing.T) {
 	require.Equal(t, s.offsets, offsets)
 }
 
-func TestSegment_OpenningSealedFiles(t *testing.T) {
+func TestSegment_OpenningFiles_Sealed(t *testing.T) {
 	dir, err := ioutil.TempDir("", "testsegment")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
 	fp := filepath.Join(dir, "testsegment_otherbase")
 
-	s, err := newSegment(fp, 1, true, LogConfig{})
+	s, err := newSegment(fp, 1, true, testLogConfig)
 	require.NoError(t, err)
 	defer s.Close()
 
@@ -219,15 +221,71 @@ func TestSegment_OpenningSealedFiles(t *testing.T) {
 
 	// now open file again
 	// fails to open for write again
-	_, err = newSegment(fp, 1, true, LogConfig{})
+	_, err = newSegment(fp, 1, true, testLogConfig)
 	require.EqualError(t, err, errSealedFile.Error())
 
-	s2, err := newSegment(fp, 1, false, LogConfig{})
+	s2, err := newSegment(fp, 1, false, testLogConfig)
 	require.NoError(t, err)
 
 	require.Equal(t, s.baseIndex, s2.baseIndex)
 	require.Equal(t, s.offsets, s2.offsets)
 	require.Equal(t, s.nextOffset, s2.nextOffset)
+	require.Equal(t, s.nextIndex(), s2.nextIndex())
+
+	// inspect logs
+	out := make([]byte, 30)
+	for i, l := range logs {
+		n, err := s.GetLog(uint64(i+1), out)
+		require.NoError(t, err)
+		require.Equal(t, []byte(l), out[:n])
+	}
+
+}
+
+func TestSegment_OpenningFiles_Unsealed(t *testing.T) {
+	dir, err := ioutil.TempDir("", "testsegment")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	fp := filepath.Join(dir, "testsegment_otherbase")
+
+	s, err := newSegment(fp, 1, true, testLogConfig)
+	require.NoError(t, err)
+	defer s.Close()
+
+	logs := []string{
+		"log 1",
+		"log 2",
+		"log 3",
+	}
+
+	_, err = s.StoreLogs(1, stringsIterator(logs))
+	require.NoError(t, err)
+
+	// Ensure it's not sealed
+	var sealHeader [1]byte
+	_, err = s.f.ReadAt(sealHeader[:], 26)
+	require.NoError(t, err)
+	require.Zero(t, sealHeader[0])
+
+	// now open file again
+	// fails to open for write again
+	s2, err := newSegment(fp, 1, true, testLogConfig)
+	require.NoError(t, err)
+
+	require.Equal(t, s.baseIndex, s2.baseIndex)
+	require.Equal(t, s.offsets, s2.offsets)
+	require.Equal(t, s.nextOffset, s2.nextOffset)
+	require.Equal(t, s.nextIndex(), s2.nextIndex())
+
+	// inspect logs
+	out := make([]byte, 30)
+	for i, l := range logs {
+		n, err := s.GetLog(uint64(i+1), out)
+		require.NoError(t, err)
+		require.Equal(t, []byte(l), out[:n])
+	}
+
 }
 
 func TestPadding(t *testing.T) {
