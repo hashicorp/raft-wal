@@ -72,6 +72,9 @@ func NewLog(dir string, c LogConfig) (*log, error) {
 	if c.SegmentChunkSize == 0 {
 		c.SegmentChunkSize = defaultLogChunkSize
 	}
+	if len(bases) == 0 && c.KnownFirstIndex != 0 {
+		return nil, fmt.Errorf("new WAL log requires 0 index")
+	}
 
 	var active *segment
 	if len(bases) == 0 {
