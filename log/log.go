@@ -34,8 +34,10 @@ type log struct {
 	lastIndex  uint64
 
 	segmentBases  []uint64
-	segments      []*segment
 	activeSegment *segment
+
+	csMu          sync.RWMutex
+	cachedSegment *segment
 
 	firstIndexUpdatedCallback func(uint64) error
 }
@@ -118,9 +120,6 @@ func (l *log) LastIndex() uint64 {
 }
 
 func (l *log) segmentFor(index uint64) (*segment, error) {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
-
 	firstIdx, lastIdx := l.firstIndex, l.lastIndex
 
 	if index < firstIdx || index > lastIdx {
@@ -130,10 +129,33 @@ func (l *log) segmentFor(index uint64) (*segment, error) {
 	if index >= l.activeSegment.baseIndex {
 		return l.activeSegment, nil
 	}
-	panic("not supported yet")
+
+	sBase, err := searchSegmentIndex(l.segmentBases, index)
+	if err != nil {
+		return nil, err
+	}
+
+	l.csMu.Lock()
+	defer l.csMu.Unlock()
+
+	if l.cachedSegment != nil && l.cachedSegment.baseIndex == sBase {
+		return l.cachedSegment, nil
+	}
+
+	seg, err := newSegment(filepath.Join(l.dir, segmentName(sBase)), sBase, false, l.config)
+	if err != nil {
+		return nil, err
+	}
+
+	l.cachedSegment.Close()
+	l.cachedSegment = seg
+	return seg, nil
 }
 
 func (l *log) GetLog(index uint64) ([]byte, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	s, err := l.segmentFor(index)
 	if err != nil {
 		return nil, err
@@ -177,7 +199,7 @@ func (l *log) maybeStartNewSegment() error {
 		return nil
 	}
 
-	err := l.activeSegment.Seal()
+	err := s.Seal()
 	if err != nil {
 		return err
 	}

@@ -40,3 +40,12 @@ func segmentsIn(dir string) ([]uint64, error) {
 
 	return result, nil
 }
+
+func searchSegmentIndex(offsets []uint64, index uint64) (uint64, error) {
+	i := sort.Search(len(offsets), func(i int) bool { return offsets[i] > index })
+	if i == 0 {
+		return 0, fmt.Errorf("value is less than first index")
+	}
+
+	return offsets[i-1], nil
+}
