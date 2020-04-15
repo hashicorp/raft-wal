@@ -32,6 +32,7 @@ var (
 	errOutOfSequence = errors.New("out of sequence index")
 	errLogNotFound   = errors.New("log entry not found")
 	errWrongSegment  = errors.New("log predates this segment")
+	errSealedFile    = errors.New("file was sealed; cannot be opened for write")
 )
 
 type segment struct {
@@ -52,76 +53,121 @@ type segment struct {
 	loadTransformers    []transformer
 }
 
-func setSegmentHeader(b [segment_header_size]byte, baseIndex uint64, config LogConfig) {
+func setSegmentHeader(b *[segment_header_size]byte, baseIndex uint64, config LogConfig) {
 	copy(b[:], segment_magic_bytes)
 	b[16] = segmentVersion
 	b[17] = byte(config.Compression)
 	binary.BigEndian.PutUint64(b[18:26], baseIndex)
 }
 
-func parseSegmentHeader(b [segment_header_size]byte) (baseIndex uint64, compression LogCompression, err error) {
+func parseSegmentHeader(b [segment_header_size]byte) (baseIndex uint64, compression LogCompression, sealed bool, indexOffset uint32, indexRecSize uint32, err error) {
 	if !bytes.Equal(b[:len(segment_magic_bytes)], segment_magic_bytes) {
-		return 0, 0, errors.New("invalid file")
+		return 0, 0, false, 0, 0, errors.New("invalid file")
 	}
 	if b[16] != segmentVersion {
-		return 0, 0, errors.New("unsupported version")
+		return 0, 0, false, 0, 0, errors.New("unsupported version")
 	}
 
-	return binary.BigEndian.Uint64(b[18:26]), LogCompression(b[17]), nil
+	sealed = b[26] == sealFlag
+	indexOffset = binary.BigEndian.Uint32(b[27:31])
+	indexRecSize = binary.BigEndian.Uint32(b[31:35])
+	return binary.BigEndian.Uint64(b[18:26]), LogCompression(b[17]), sealed, indexOffset, indexRecSize, nil
 }
 
 func newSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig) (*segment, error) {
+	if fileutil.Exist(fp) {
+		return openSegment(fp, baseIndex, forWrite, config)
+	}
+
+	return createSegment(fp, baseIndex, forWrite, config)
+}
+
+func openSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig) (*segment, error) {
 	rdf := os.O_RDONLY
 	if forWrite {
 		rdf = os.O_RDWR
 	}
 
-	var f *os.File
-	var err error
+	f, err := os.OpenFile(fp, rdf, 0)
+	if err != nil {
+		return nil, err
+	}
 
-	if fileutil.Exist(fp) {
-		f, err = os.Open(fp)
+	var header [segment_header_size]byte
+	_, err = f.ReadAt(header[:], 0)
+	if err != nil {
+		return nil, err
+	}
+	bi, compression, sealed, indexOffset, indexRecSize, err := parseSegmentHeader(header)
+	if err != nil {
+		return nil, err
+	}
+
+	if bi != baseIndex {
+		return nil, fmt.Errorf("mismatch base index: %v != %v", bi, baseIndex)
+	}
+
+	config.Compression = compression
+
+	s := &segment{
+		baseIndex:           baseIndex,
+		openForWrite:        forWrite,
+		config:              config,
+		offsets:             make([]uint32, 0, 512),
+		nextOffset:          segmentDataInitOffset,
+		f:                   f,
+		bw:                  bufio.NewWriterSize(f, 4096),
+		persistTransformers: persistTransformers(config.UserLogConfig),
+		loadTransformers:    loadTransformers(config.UserLogConfig),
+	}
+
+	if sealed && forWrite {
+		return nil, errSealedFile
+	}
+
+	if sealed {
+		s.nextOffset = indexOffset
+
+		indexData := make([]byte, indexRecSize)
+		n, err := s.readRecordAt(indexOffset, indexRecSize, indexSentinelIndex, indexData)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to parse index data: %v", err)
 		}
-
-		var header [segment_header_size]byte
-		_, err := f.ReadAt(header[:], 0)
+		s.offsets, err = parseIndexData(indexData[:n])
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to parse index data: %v", err)
 		}
-		bi, compression, err := parseSegmentHeader(header)
-		if err != nil {
-			return nil, err
-		}
-
-		if bi != baseIndex {
-			return nil, fmt.Errorf("mismatch base index: %v != %v", bi, baseIndex)
-		}
-
-		config.Compression = compression
-
-		// FIXME: FIND LATEST VALID OFFSET, and rebuild index
 	} else {
-		f, err = os.OpenFile(fp, rdf|os.O_CREATE, 0600)
-		if err != nil {
-			return nil, err
-		}
+		// FIXME: parse and validate
+	}
 
-		if err := fileutil.Preallocate(f, 64*1024*1024, true); err != nil {
-			return nil, err
-		}
+	return s, nil
+}
 
-		var header [segment_header_size]byte
-		setSegmentHeader(header, baseIndex, config)
-		if _, err := f.Write(header[:]); err != nil {
-			os.Remove(fp)
-			return nil, err
-		}
+func createSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig) (*segment, error) {
+	rdf := os.O_RDONLY
+	if forWrite {
+		rdf = os.O_RDWR
+	}
 
-		if _, err := f.Seek(segmentDataInitOffset, io.SeekStart); err != nil {
-			return nil, err
-		}
+	f, err := os.OpenFile(fp, rdf|os.O_CREATE, 0600)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := fileutil.Preallocate(f, 64*1024*1024, true); err != nil {
+		return nil, err
+	}
+
+	var header [segment_header_size]byte
+	setSegmentHeader(&header, baseIndex, config)
+	if _, err := f.Write(header[:]); err != nil {
+		os.Remove(fp)
+		return nil, err
+	}
+
+	if _, err := f.Seek(segmentDataInitOffset, io.SeekStart); err != nil {
+		return nil, err
 	}
 
 	return &segment{
@@ -350,25 +396,25 @@ func (s *segment) indexData() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func (s *segment) writeIndex() (uint32, error) {
+func (s *segment) writeIndex() (uint32, uint32, error) {
 	s.offsetLock.RLock()
 	defer s.offsetLock.RUnlock()
 
 	offset := s.nextOffset
 	data, err := s.indexData()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
-	_, err = s.writeRecord(indexSentinelIndex, data)
+	recSize, err := s.writeRecord(indexSentinelIndex, data)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if err := s.bw.Flush(); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
-	return offset, nil
+	return offset, recSize, nil
 }
 
 func (s *segment) nextIndex() uint64 {
@@ -382,24 +428,33 @@ func (s *segment) Seal() error {
 	s.writeLock.Lock()
 	defer s.writeLock.Unlock()
 
-	offset, err := s.writeIndex()
+	offset, recSize, err := s.writeIndex()
 	if err != nil {
 		return err
 	}
 
-	if err != fileutil.Fdatasync(s.f) {
-		return err
+	if !s.config.NoSync {
+		if err := fileutil.Fdatasync(s.f); err != nil {
+			return err
+		}
 	}
 
-	var b [5]byte
+	var b [9]byte
 	b[0] = sealFlag
-	binary.BigEndian.PutUint32(b[1:], offset)
+	binary.BigEndian.PutUint32(b[1:5], offset)
+	binary.BigEndian.PutUint32(b[5:9], recSize)
 
 	if _, err := s.f.WriteAt(b[:], 26); err != nil {
 		return err
 	}
 
-	return fileutil.Fdatasync(s.f)
+	if !s.config.NoSync {
+		if err := fileutil.Fdatasync(s.f); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func recordPadding(length uint32) uint32 {

@@ -147,7 +147,9 @@ func (l *log) segmentFor(index uint64) (*segment, error) {
 		return nil, err
 	}
 
-	l.cachedSegment.Close()
+	if l.cachedSegment != nil {
+		l.cachedSegment.Close()
+	}
 	l.cachedSegment = seg
 	return seg, nil
 }

@@ -188,6 +188,48 @@ func TestSegment_SealingWorks(t *testing.T) {
 	require.Equal(t, s.offsets, offsets)
 }
 
+func TestSegment_OpenningSealedFiles(t *testing.T) {
+	dir, err := ioutil.TempDir("", "testsegment")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	fp := filepath.Join(dir, "testsegment_otherbase")
+
+	s, err := newSegment(fp, 1, true, LogConfig{})
+	require.NoError(t, err)
+	defer s.Close()
+
+	logs := []string{
+		"log 1",
+		"log 2",
+		"log 3",
+	}
+
+	_, err = s.StoreLogs(1, stringsIterator(logs))
+	require.NoError(t, err)
+
+	err = s.Seal()
+	require.NoError(t, err)
+
+	// Ensure it's sealed
+	var sealHeader [1]byte
+	_, err = s.f.ReadAt(sealHeader[:], 26)
+	require.NoError(t, err)
+	require.Equal(t, byte(sealFlag), sealHeader[0])
+
+	// now open file again
+	// fails to open for write again
+	_, err = newSegment(fp, 1, true, LogConfig{})
+	require.EqualError(t, err, errSealedFile.Error())
+
+	s2, err := newSegment(fp, 1, false, LogConfig{})
+	require.NoError(t, err)
+
+	require.Equal(t, s.baseIndex, s2.baseIndex)
+	require.Equal(t, s.offsets, s2.offsets)
+	require.Equal(t, s.nextOffset, s2.nextOffset)
+}
+
 func TestPadding(t *testing.T) {
 	cases := []struct {
 		input   uint32

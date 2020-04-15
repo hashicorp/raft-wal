@@ -17,6 +17,7 @@ func TestBasic(t *testing.T) {
 	lc := LogConfig{
 		FirstIndexUpdatedCallback: func(uint64) error { return nil },
 		UserLogConfig: UserLogConfig{
+
 			NoSync:      false,
 			Compression: LogCompressionNone,
 		},
@@ -98,5 +99,44 @@ func Test_CreatesSegments_AtInsertions(t *testing.T) {
 		require.Equal(t, splits[:len], ss)
 
 		require.Equal(t, splits[:len], log.segmentBases)
+	}
+}
+
+func Test_Log_ReadsFromMultipleSegments(t *testing.T) {
+	tmpdir, err := ioutil.TempDir("", "raftwal")
+	fmt.Println("CREATED IN ", tmpdir)
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpdir)
+
+	lc := LogConfig{
+		FirstIndexUpdatedCallback: func(uint64) error { return nil },
+		UserLogConfig: UserLogConfig{
+			SegmentChunkSize: 4,
+			NoSync:           false,
+			Compression:      LogCompressionNone,
+		},
+	}
+
+	log, err := NewLog(tmpdir, lc)
+	require.NoError(t, err)
+
+	require.Len(t, log.segmentBases, 1)
+
+	for i := uint64(1); i < 20; i++ {
+		d := fmt.Sprintf("data %v", i)
+		err := log.StoreLogs(i, stringsIterator([]string{d}))
+		require.NoError(t, err)
+
+	}
+
+	require.Len(t, log.segmentBases, 5)
+
+	for i := uint64(1); i < 20; i++ {
+		t.Run(fmt.Sprintf("case %v", i), func(t *testing.T) {
+			bytes, err := log.GetLog(i)
+			require.NoError(t, err)
+
+			require.Equal(t, fmt.Sprintf("data %v", i), string(bytes))
+		})
 	}
 }
