@@ -69,17 +69,17 @@ func TestHeadSegmentsToDelete(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(fmt.Sprintf("case %v", c.newFirstIndex), func(t *testing.T) {
-			toDelete := headSegmentsToDelete(offsets, c.newFirstIndex)
+			toDelete := segmentContainingIndex(offsets, c.newFirstIndex)
 			require.Equal(t, c.toDelete, toDelete)
 			require.Less(t, toDelete, len(offsets))
 		})
 	}
 
 	// some odd cases
-	require.Equal(t, 0, headSegmentsToDelete([]uint64{1}, 1))
-	require.Equal(t, 0, headSegmentsToDelete([]uint64{1}, 5))
+	require.Equal(t, 0, segmentContainingIndex([]uint64{1}, 1))
+	require.Equal(t, 0, segmentContainingIndex([]uint64{1}, 5))
 
-	require.Equal(t, 0, headSegmentsToDelete([]uint64{5}, 4))
-	require.Equal(t, 0, headSegmentsToDelete([]uint64{5}, 5))
-	require.Equal(t, 0, headSegmentsToDelete([]uint64{5}, 6))
+	require.Equal(t, 0, segmentContainingIndex([]uint64{5}, 4))
+	require.Equal(t, 0, segmentContainingIndex([]uint64{5}, 5))
+	require.Equal(t, 0, segmentContainingIndex([]uint64{5}, 6))
 }

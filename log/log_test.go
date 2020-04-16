@@ -18,7 +18,7 @@ func TestBasic(t *testing.T) {
 		FirstIndexUpdatedCallback: func(uint64) error { return nil },
 		UserLogConfig: UserLogConfig{
 
-			NoSync:      false,
+			NoSync:      true,
 			Compression: LogCompressionNone,
 		},
 	}
@@ -58,7 +58,7 @@ func Test_CreatesSegments_AtInsertions(t *testing.T) {
 		FirstIndexUpdatedCallback: func(uint64) error { return nil },
 		UserLogConfig: UserLogConfig{
 			SegmentChunkSize: 4,
-			NoSync:           false,
+			NoSync:           true,
 			Compression:      LogCompressionNone,
 		},
 	}
@@ -104,7 +104,6 @@ func Test_CreatesSegments_AtInsertions(t *testing.T) {
 
 func Test_Log_ReadsFromMultipleSegments(t *testing.T) {
 	tmpdir, err := ioutil.TempDir("", "raftwal")
-	fmt.Println("CREATED IN ", tmpdir)
 	require.NoError(t, err)
 	defer os.RemoveAll(tmpdir)
 
@@ -112,7 +111,7 @@ func Test_Log_ReadsFromMultipleSegments(t *testing.T) {
 		FirstIndexUpdatedCallback: func(uint64) error { return nil },
 		UserLogConfig: UserLogConfig{
 			SegmentChunkSize: 4,
-			NoSync:           false,
+			NoSync:           true,
 			Compression:      LogCompressionNone,
 		},
 	}

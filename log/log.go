@@ -224,7 +224,10 @@ func (l *log) maybeStartNewSegment() error {
 	}
 	s.Close()
 
-	nextBase := s.nextIndex()
+	return l.startNewSegment(s.nextIndex())
+}
+
+func (l *log) startNewSegment(nextBase uint64) error {
 	active, err := newSegment(filepath.Join(l.dir, segmentName(nextBase)), nextBase, true, l.config)
 	if err != nil {
 		return err
@@ -234,6 +237,7 @@ func (l *log) maybeStartNewSegment() error {
 	l.activeSegment = active
 
 	return nil
+
 }
 
 func (l *log) TruncateTail(index uint64) error {
@@ -273,16 +277,32 @@ func (l *log) truncateTailImpl(index uint64) error {
 	}
 
 	if index >= l.activeSegment.baseIndex {
+		if err := l.activeSegment.truncateTail(index); err != nil {
+			return err
+		}
 
+		return l.lf.commit()
 	}
-	// TODO:
-	// if index > activeSegment: truncate from activeSegment
-	// otherwise
-	// 1. Close activeSegment
-	// 2. Delete any files more recent than latest index
-	// 3. start a new baseindex
-	// 4. reset next transaction
-	panic("not implemented")
+
+	l.activeSegment.Close()
+
+	idx := segmentContainingIndex(l.segmentBases, index)
+
+	toKeep, toDelete := l.segmentBases[:idx+1], l.segmentBases[idx+1:]
+	for _, sb := range toDelete {
+		fp := filepath.Join(l.dir, segmentName(sb))
+		if err := os.Remove(fp); err != nil {
+			return err
+		}
+	}
+	l.segmentBases = toKeep
+
+	err = l.startNewSegment(index + 1)
+	if err != nil {
+		return err
+	}
+
+	return l.lf.commit()
 }
 
 func (l *log) TruncateHead(index uint64) error {
@@ -311,7 +331,7 @@ func (l *log) TruncateHead(index uint64) error {
 }
 
 func (l *log) deleteOldLogFiles() {
-	delIdx := headSegmentsToDelete(l.segmentBases, l.firstIndex)
+	delIdx := segmentContainingIndex(l.segmentBases, l.firstIndex)
 
 	toDelete, toKeep := l.segmentBases[:delIdx], l.segmentBases[delIdx:]
 
