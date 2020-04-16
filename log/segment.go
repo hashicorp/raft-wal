@@ -273,12 +273,11 @@ func (s *segment) readRecordAt(offset, rl uint32, index uint64, out []byte) (int
 }
 func (s *segment) GetLog(index uint64, out []byte) (int, error) {
 	s.offsetLock.RLock()
+	defer s.offsetLock.RUnlock()
 
 	if index < s.baseIndex {
-		s.offsetLock.RUnlock()
 		return 0, errWrongSegment
-	} else if index > s.baseIndex+uint64(len(s.offsets)) {
-		s.offsetLock.RUnlock()
+	} else if index >= s.baseIndex+uint64(len(s.offsets)) {
 		return 0, errLogNotFound
 	}
 
@@ -292,8 +291,6 @@ func (s *segment) GetLog(index uint64, out []byte) (int, error) {
 	}
 
 	offset := s.offsets[li]
-	s.offsetLock.RUnlock()
-
 	return s.readRecordAt(offset, rl, index, out)
 }
 
@@ -351,7 +348,6 @@ func (s *segment) StoreLogs(index uint64, next func() []byte) (int, error) {
 	s.offsetLock.RLock()
 	if int(index-s.baseIndex) != len(s.offsets) {
 		s.offsetLock.RUnlock()
-		fmt.Println("FOUND ", index, s.baseIndex, len(s.offsets))
 		return 0, errOutOfSequence
 	}
 

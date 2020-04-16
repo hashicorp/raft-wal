@@ -75,6 +75,12 @@ func TestSegment_Basic(t *testing.T) {
 				require.Equal(t, []byte(l), out[:n])
 			}
 
+			_, err = s.GetLog(uint64(len(logs)+1), out)
+			require.EqualError(t, err, errLogNotFound.Error())
+
+			_, err = s.GetLog(uint64(len(logs))+100, out)
+			require.EqualError(t, err, errLogNotFound.Error())
+
 			_, err = s.StoreLogs(1, stringsIterator(moreLogs))
 			require.Error(t, err)
 			require.Equal(t, errOutOfSequence, err)
@@ -129,10 +135,16 @@ func TestSegment_OtherBase(t *testing.T) {
 			logs = append(logs, moreLogs...)
 			out := make([]byte, 32)
 			for i, l := range logs {
-				n, err := s.GetLog(uint64(i)+baseIndex, out)
+				n, err := s.GetLog(baseIndex+uint64(i), out)
 				require.NoError(t, err)
 				require.Equal(t, []byte(l), out[:n])
 			}
+
+			_, err = s.GetLog(baseIndex+uint64(len(logs)+1), out)
+			require.EqualError(t, err, errLogNotFound.Error())
+
+			_, err = s.GetLog(baseIndex+uint64(len(logs))+100, out)
+			require.EqualError(t, err, errLogNotFound.Error())
 
 			_, err = s.StoreLogs(1, stringsIterator(moreLogs))
 			require.Error(t, err)
@@ -150,26 +162,9 @@ func TestSegment_OtherBase(t *testing.T) {
 }
 
 func TestSegment_SealingWorks(t *testing.T) {
-	dir, err := ioutil.TempDir("", "testsegment")
-	require.NoError(t, err)
-	defer os.RemoveAll(dir)
+	s := testSegment(t, 100, 3)
 
-	fp := filepath.Join(dir, "testsegment_otherbase")
-
-	s, err := newSegment(fp, 1, true, testLogConfig)
-	require.NoError(t, err)
-	defer s.Close()
-
-	logs := []string{
-		"log 1",
-		"log 2",
-		"log 3",
-	}
-
-	_, err = s.StoreLogs(1, stringsIterator(logs))
-	require.NoError(t, err)
-
-	err = s.Seal()
+	err := s.Seal()
 	require.NoError(t, err)
 
 	// inspect seal flag
@@ -191,26 +186,11 @@ func TestSegment_SealingWorks(t *testing.T) {
 }
 
 func TestSegment_OpenningFiles_Sealed(t *testing.T) {
-	dir, err := ioutil.TempDir("", "testsegment")
-	require.NoError(t, err)
-	defer os.RemoveAll(dir)
+	baseIndex := uint64(100)
+	s := testSegment(t, baseIndex, 3)
+	fp := s.f.Name()
 
-	fp := filepath.Join(dir, "testsegment_otherbase")
-
-	s, err := newSegment(fp, 1, true, testLogConfig)
-	require.NoError(t, err)
-	defer s.Close()
-
-	logs := []string{
-		"log 1",
-		"log 2",
-		"log 3",
-	}
-
-	_, err = s.StoreLogs(1, stringsIterator(logs))
-	require.NoError(t, err)
-
-	err = s.Seal()
+	err := s.Seal()
 	require.NoError(t, err)
 
 	// Ensure it's sealed
@@ -221,10 +201,14 @@ func TestSegment_OpenningFiles_Sealed(t *testing.T) {
 
 	// now open file again
 	// fails to open for write again
-	_, err = newSegment(fp, 1, true, testLogConfig)
+	_, err = newSegment(fp, baseIndex, true, testLogConfig)
 	require.EqualError(t, err, errSealedFile.Error())
 
-	s2, err := newSegment(fp, 1, false, testLogConfig)
+	// fails to open for wront index again
+	_, err = newSegment(fp, 10, false, testLogConfig)
+	require.EqualError(t, err, fmt.Sprintf("mismatch base index: %v != 10", baseIndex))
+
+	s2, err := newSegment(fp, baseIndex, false, testLogConfig)
 	require.NoError(t, err)
 
 	require.Equal(t, s.baseIndex, s2.baseIndex)
@@ -234,10 +218,11 @@ func TestSegment_OpenningFiles_Sealed(t *testing.T) {
 
 	// inspect logs
 	out := make([]byte, 30)
-	for i, l := range logs {
-		n, err := s.GetLog(uint64(i+1), out)
-		require.NoError(t, err)
-		require.Equal(t, []byte(l), out[:n])
+	for i := baseIndex; i < baseIndex+3; i++ {
+		l := fmt.Sprintf("data %v", i)
+		n, err := s.GetLog(uint64(i), out)
+		require.NoErrorf(t, err, "log %v", i)
+		require.Equalf(t, []byte(l), out[:n], "log %v", i)
 	}
 
 }
