@@ -140,7 +140,7 @@ func (l *log) segmentFor(index uint64) (*segment, error) {
 	firstIdx, lastIdx := l.firstIndex, l.lastIndex
 
 	if index < firstIdx || index > lastIdx {
-		return nil, fmt.Errorf("out of range: %v not in [%v, %v]", index, firstIdx, lastIdx)
+		return nil, errLogNotFound
 	}
 
 	if index >= l.activeSegment.baseIndex {
@@ -258,8 +258,6 @@ func (l *log) TruncateTail(index uint64) error {
 }
 
 func (l *log) truncateTailImpl(index uint64) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
 
 	// make deletion idempotent, so deleting what's already deleted doesn't
 	// fail
@@ -280,6 +278,7 @@ func (l *log) truncateTailImpl(index uint64) error {
 		if err := l.activeSegment.truncateTail(index); err != nil {
 			return err
 		}
+		l.lastIndex = index - 1
 
 		return l.lf.commit()
 	}
@@ -287,6 +286,9 @@ func (l *log) truncateTailImpl(index uint64) error {
 	l.activeSegment.Close()
 
 	idx := segmentContainingIndex(l.segmentBases, index)
+	if l.segmentBases[idx] == index {
+		idx--
+	}
 
 	toKeep, toDelete := l.segmentBases[:idx+1], l.segmentBases[idx+1:]
 	for _, sb := range toDelete {
@@ -297,11 +299,12 @@ func (l *log) truncateTailImpl(index uint64) error {
 	}
 	l.segmentBases = toKeep
 
-	err = l.startNewSegment(index + 1)
+	err = l.startNewSegment(index)
 	if err != nil {
 		return err
 	}
 
+	l.lastIndex = index - 1
 	return l.lf.commit()
 }
 

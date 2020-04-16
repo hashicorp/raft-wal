@@ -301,6 +301,7 @@ func (s *segment) transform(data []byte) ([]byte, error) {
 var padding [8]byte
 
 func (s *segment) writeRecord(index uint64, data []byte) (uint32, error) {
+
 	var rh [16]byte
 	var err error
 
@@ -518,6 +519,11 @@ func (s *segment) truncateTail(index uint64) error {
 	}
 
 	if err := s.sync(); err != nil {
+		return err
+	}
+
+	_, err = s.f.Seek(int64(newNextOffset), io.SeekStart)
+	if err != nil {
 		return err
 	}
 
