@@ -50,7 +50,7 @@ func searchSegmentIndex(offsets []uint64, index uint64) (uint64, error) {
 	return offsets[i-1], nil
 }
 
-func computeSegmentsToDelete(offsets []uint64, index uint64) int {
+func headSegmentsToDelete(offsets []uint64, index uint64) int {
 	i := sort.Search(len(offsets), func(i int) bool { return offsets[i] > index })
 
 	// never attempt to delete all files

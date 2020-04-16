@@ -42,7 +42,7 @@ func TestSearchSegmentIndex(t *testing.T) {
 	}
 }
 
-func TestComputeSegmentsToDelete(t *testing.T) {
+func TestHeadSegmentsToDelete(t *testing.T) {
 	offsets := []uint64{1, 5, 8, 100, 1000, 1002, 1003}
 
 	cases := []struct {
@@ -69,17 +69,17 @@ func TestComputeSegmentsToDelete(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(fmt.Sprintf("case %v", c.newFirstIndex), func(t *testing.T) {
-			toDelete := computeSegmentsToDelete(offsets, c.newFirstIndex)
+			toDelete := headSegmentsToDelete(offsets, c.newFirstIndex)
 			require.Equal(t, c.toDelete, toDelete)
 			require.Less(t, toDelete, len(offsets))
 		})
 	}
 
 	// some odd cases
-	require.Equal(t, 0, computeSegmentsToDelete([]uint64{1}, 1))
-	require.Equal(t, 0, computeSegmentsToDelete([]uint64{1}, 5))
+	require.Equal(t, 0, headSegmentsToDelete([]uint64{1}, 1))
+	require.Equal(t, 0, headSegmentsToDelete([]uint64{1}, 5))
 
-	require.Equal(t, 0, computeSegmentsToDelete([]uint64{5}, 4))
-	require.Equal(t, 0, computeSegmentsToDelete([]uint64{5}, 5))
-	require.Equal(t, 0, computeSegmentsToDelete([]uint64{5}, 6))
+	require.Equal(t, 0, headSegmentsToDelete([]uint64{5}, 4))
+	require.Equal(t, 0, headSegmentsToDelete([]uint64{5}, 5))
+	require.Equal(t, 0, headSegmentsToDelete([]uint64{5}, 6))
 }

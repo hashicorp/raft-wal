@@ -7,6 +7,8 @@ import (
 	"sync"
 )
 
+const defaultLogChunkSize = 4096
+
 type LogCompression byte
 
 const (
@@ -24,23 +26,6 @@ type Log interface {
 
 	TruncateTail(index uint64) error
 	TruncateHead(index uint64) error
-}
-
-type log struct {
-	mu     sync.RWMutex
-	dir    string
-	config LogConfig
-
-	firstIndex uint64
-	lastIndex  uint64
-
-	segmentBases  []uint64
-	activeSegment *segment
-
-	csMu          sync.RWMutex
-	cachedSegment *segment
-
-	firstIndexUpdatedCallback func(uint64) error
 }
 
 type UserLogConfig struct {
@@ -61,9 +46,32 @@ type LogConfig struct {
 	UserLogConfig
 }
 
-const defaultLogChunkSize = 4096
+type log struct {
+	mu     sync.RWMutex
+	dir    string
+	config LogConfig
+
+	lf *lockFile
+
+	firstIndex uint64
+	lastIndex  uint64
+
+	segmentBases  []uint64
+	activeSegment *segment
+
+	csMu          sync.RWMutex
+	cachedSegment *segment
+
+	firstIndexUpdatedCallback func(uint64) error
+}
 
 func NewLog(dir string, c LogConfig) (*log, error) {
+
+	lf, err := newLockFile(filepath.Join(dir, "lock"), c.NoSync)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open lock file: %v", err)
+	}
+
 	bases, err := segmentsIn(dir)
 	if err != nil {
 		return nil, err
@@ -88,6 +96,7 @@ func NewLog(dir string, c LogConfig) (*log, error) {
 
 	l := &log{
 		dir:                       dir,
+		lf:                        lf,
 		firstIndex:                c.KnownFirstIndex,
 		firstIndexUpdatedCallback: c.FirstIndexUpdatedCallback,
 		segmentBases:              bases,
@@ -97,6 +106,7 @@ func NewLog(dir string, c LogConfig) (*log, error) {
 
 	// delete old files if they present from older run
 	l.deleteOldLogFiles()
+	l.redoPendingTransaction()
 
 	return l, nil
 }
@@ -227,6 +237,30 @@ func (l *log) maybeStartNewSegment() error {
 }
 
 func (l *log) TruncateTail(index uint64) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	err := l.lf.startTransaction(command{Type: cmdTruncatingTail, Index: index})
+	if err != nil {
+		return err
+	}
+
+	err = l.truncateTailImpl(index)
+	if err != nil {
+		return fmt.Errorf("failed to truncate tail: %v", err)
+	}
+
+	return l.lf.commit()
+}
+
+func (l *log) truncateTailImpl(index uint64) error {
+	// TODO:
+	// if index > activeSegment: truncate from activeSegment
+	// otherwise
+	// 1. Close activeSegment
+	// 2. Delete any files more recent than latest index
+	// 3. start a new baseindex
+	// 4. reset next transaction
 	panic("not implemented")
 }
 
@@ -246,7 +280,7 @@ func (l *log) TruncateHead(index uint64) error {
 }
 
 func (l *log) deleteOldLogFiles() {
-	delIdx := computeSegmentsToDelete(l.segmentBases, l.firstIndex)
+	delIdx := headSegmentsToDelete(l.segmentBases, l.firstIndex)
 
 	toDelete, toKeep := l.segmentBases[:delIdx], l.segmentBases[delIdx:]
 
@@ -256,4 +290,25 @@ func (l *log) deleteOldLogFiles() {
 	}
 
 	l.segmentBases = toKeep
+}
+
+func (l *log) redoPendingTransaction() error {
+	c, err := l.lf.currentTransaction()
+	if err != nil {
+		return err
+	}
+	if c == nil {
+		return nil
+	}
+
+	switch c.Type {
+	case cmdTruncatingTail:
+		err := l.truncateTailImpl(c.Index)
+		if err != nil {
+			return err
+		}
+		return l.lf.commit()
+	default:
+		return fmt.Errorf("unknown command: %v", c.Type)
+	}
 }
