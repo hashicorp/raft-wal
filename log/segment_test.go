@@ -288,6 +288,84 @@ func TestSegment_OpenningFiles_Unsealed(t *testing.T) {
 
 }
 
+func TestSegment_TruncateTail(t *testing.T) {
+	testFn := func(t *testing.T, initBase, dataLength, dIdx uint64) {
+		s := testSegment(t, initBase, dataLength)
+
+		offsets := append([]uint32{}, s.offsets...)
+		offsets = append(offsets, s.nextOffset)
+
+		err := s.truncateTail(dIdx)
+		require.NoError(t, err)
+
+		diff := dIdx - initBase
+		require.Equal(t, offsets[:diff], s.offsets)
+		require.Equal(t, offsets[diff], s.nextOffset)
+		require.Equal(t, dIdx, s.nextIndex())
+	}
+
+	testInvalidFn := func(t *testing.T, initBase, dataLength uint64) {
+		s := testSegment(t, initBase, dataLength)
+
+		offsets := append([]uint32{}, s.offsets...)
+		nextOffset := s.nextOffset
+
+		// truncating before base is an error
+		err := s.truncateTail(initBase - 1)
+		require.Error(t, err)
+		require.Equal(t, offsets, s.offsets)
+		require.Equal(t, nextOffset, s.nextOffset)
+
+		// truncating beyond data is a noop
+		err = s.truncateTail(initBase + dataLength + 1)
+		require.NoError(t, err)
+		require.Equal(t, offsets, s.offsets)
+		require.Equal(t, nextOffset, s.nextOffset)
+
+		// truncating way beyond data is noop
+		err = s.truncateTail(initBase + dataLength + 100)
+		require.NoError(t, err)
+		require.Equal(t, offsets, s.offsets)
+		require.Equal(t, nextOffset, s.nextOffset)
+	}
+
+	for _, initBase := range []uint64{1, 50} {
+		for _, dataLength := range []uint64{5} {
+			for dIdx := initBase; dIdx < initBase+dataLength; dIdx++ {
+				t.Run(fmt.Sprintf("init:%v len:%v dIdx:%v", initBase, dataLength, dIdx), func(t *testing.T) {
+					testFn(t, initBase, dataLength, dIdx)
+				})
+			}
+
+			t.Run(fmt.Sprintf("init:%v len:%v invalid truncations", initBase, dataLength), func(t *testing.T) {
+				testInvalidFn(t, initBase, dataLength)
+			})
+		}
+
+	}
+}
+
+func testSegment(t *testing.T, baseIndex, sampleData uint64) *segment {
+	dir, err := ioutil.TempDir("", "testsegment")
+	require.NoError(t, err)
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	fp := filepath.Join(dir, "testsegment")
+	s, err := newSegment(fp, baseIndex, true, testLogConfig)
+	require.NoError(t, err)
+	t.Cleanup(func() { s.Close() })
+
+	logs := make([]string, 0, sampleData)
+	for i := uint64(0); i < sampleData; i++ {
+		logs = append(logs, fmt.Sprintf("data %v", i+baseIndex))
+	}
+
+	_, err = s.StoreLogs(baseIndex, stringsIterator(logs))
+	require.NoError(t, err)
+
+	return s
+}
+
 func TestPadding(t *testing.T) {
 	cases := []struct {
 		input   uint32

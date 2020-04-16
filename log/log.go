@@ -254,6 +254,27 @@ func (l *log) TruncateTail(index uint64) error {
 }
 
 func (l *log) truncateTailImpl(index uint64) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// make deletion idempotent, so deleting what's already deleted doesn't
+	// fail
+	if index > l.lastIndex {
+		return nil
+	}
+
+	if index <= l.firstIndex {
+		return fmt.Errorf("deletion would render log empty")
+	}
+
+	err := l.lf.startTransaction(command{Type: cmdTruncatingTail, Index: index})
+	if err != nil {
+		return err
+	}
+
+	if index >= l.activeSegment.baseIndex {
+
+	}
 	// TODO:
 	// if index > activeSegment: truncate from activeSegment
 	// otherwise
@@ -267,6 +288,16 @@ func (l *log) truncateTailImpl(index uint64) error {
 func (l *log) TruncateHead(index uint64) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	// make deletion idempotent, so deleting what's already deleted doesn't
+	// fail
+	if index < l.firstIndex {
+		return nil
+	}
+
+	if index >= l.lastIndex {
+		return fmt.Errorf("deletion would render log empty")
+	}
 
 	err := l.firstIndexUpdatedCallback(index + 1)
 	if err != nil {

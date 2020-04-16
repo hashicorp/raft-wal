@@ -33,6 +33,7 @@ var (
 	errLogNotFound   = errors.New("log entry not found")
 	errWrongSegment  = errors.New("log predates this segment")
 	errSealedFile    = errors.New("file was sealed; cannot be opened for write")
+	errReadOnlyFile  = errors.New("file is read only")
 )
 
 type segment struct {
@@ -339,7 +340,7 @@ func recordSize(dataLen uint32) uint32 {
 
 func (s *segment) StoreLogs(index uint64, next func() []byte) (int, error) {
 	if !s.openForWrite {
-		return 0, fmt.Errorf("file is ready only")
+		return 0, errReadOnlyFile
 	}
 
 	var err error
@@ -350,6 +351,7 @@ func (s *segment) StoreLogs(index uint64, next func() []byte) (int, error) {
 	s.offsetLock.RLock()
 	if int(index-s.baseIndex) != len(s.offsets) {
 		s.offsetLock.RUnlock()
+		fmt.Println("FOUND ", index, s.baseIndex, len(s.offsets))
 		return 0, errOutOfSequence
 	}
 
@@ -493,6 +495,38 @@ func (s *segment) Seal() error {
 			return err
 		}
 	}
+
+	return nil
+}
+
+func (s *segment) truncateTail(index uint64) error {
+	if !s.openForWrite {
+		return errReadOnlyFile
+	}
+
+	if index < s.baseIndex {
+		return fmt.Errorf("invalid index, less than base")
+	}
+
+	s.writeLock.Lock()
+	defer s.writeLock.Unlock()
+
+	diff := int(index - s.baseIndex)
+
+	if diff >= len(s.offsets) {
+		return nil
+	}
+
+	newNextOffset := s.offsets[diff]
+	newOffsets := s.offsets[:diff]
+
+	err := s.f.Truncate(int64(newNextOffset))
+	if err != nil {
+		return err
+	}
+
+	s.offsets = newOffsets
+	s.nextOffset = newNextOffset
 
 	return nil
 }
