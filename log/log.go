@@ -269,11 +269,6 @@ func (l *log) truncateTailImpl(index uint64) error {
 		return fmt.Errorf("deletion would render log empty")
 	}
 
-	err := l.lf.startTransaction(command{Type: cmdTruncatingTail, Index: index})
-	if err != nil {
-		return err
-	}
-
 	if index >= l.activeSegment.baseIndex {
 		if err := l.activeSegment.truncateTail(index); err != nil {
 			return err
