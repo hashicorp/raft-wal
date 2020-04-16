@@ -381,7 +381,7 @@ func (s *segment) StoreLogs(index uint64, next func() []byte) (int, error) {
 		goto ROLLBACK
 	}
 
-	if err = fileutil.Fdatasync(s.f); err != nil {
+	if err = s.sync(); err != nil {
 		goto ROLLBACK
 	}
 
@@ -471,10 +471,8 @@ func (s *segment) Seal() error {
 		return err
 	}
 
-	if !s.config.NoSync {
-		if err := fileutil.Fdatasync(s.f); err != nil {
-			return err
-		}
+	if err := s.sync(); err != nil {
+		return err
 	}
 
 	var b [9]byte
@@ -486,10 +484,8 @@ func (s *segment) Seal() error {
 		return err
 	}
 
-	if !s.config.NoSync {
-		if err := fileutil.Fdatasync(s.f); err != nil {
-			return err
-		}
+	if err := s.sync(); err != nil {
+		return err
 	}
 
 	return nil
@@ -521,10 +517,22 @@ func (s *segment) truncateTail(index uint64) error {
 		return err
 	}
 
+	if err := s.sync(); err != nil {
+		return err
+	}
+
 	s.offsets = newOffsets
 	s.nextOffset = newNextOffset
 
 	return nil
+}
+
+func (s *segment) sync() error {
+	if s.config.NoSync {
+		return nil
+	}
+
+	return fileutil.Fdatasync(s.f)
 }
 
 func recordPadding(length uint32) uint32 {
