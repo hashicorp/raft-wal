@@ -51,6 +51,8 @@ func NewWAL(dir string, c LogConfig) (*wal, error) {
 		return nil, fmt.Errorf("failed to create meta: %v", err)
 	}
 
+	// note that log.NewLog will sync directory, including metapage
+
 	wal.log, err = log.NewLog(dir, log.LogConfig{
 		KnownFirstIndex:           wal.meta.FirstIndex,
 		FirstIndexUpdatedCallback: wal.setFirstIndex,
@@ -160,6 +162,5 @@ func (w *wal) DeleteRange(min, max uint64) error {
 }
 
 func (w *wal) Close() error {
-	// TODO: implement me
-	return nil
+	return w.log.Close()
 }
