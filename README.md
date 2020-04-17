@@ -75,3 +75,13 @@ The following are known issues and things we should consider:
 * Implement encryption wrappers!  Let's encrypt log entries
 
 * Test crash recovery with [ALICE](https://github.com/madthanu/alice).
+
+## Bibliography
+
+* [Files are hard](https://danluu.com/file-consistency/)
+* [Files are fraught with peril](https://danluu.com/deconstruct-files/)
+* [BoltDB Implementation](https://github.com/boltdb/bolt)
+* LMVDB Design: [presentation](https://www.snia.org/sites/default/files/SDC15_presentations/database/HowardChu_The_Lighting_Memory_Database.pdf), [talk](https://www.youtube.com/watch?v=tEa5sAh-kVk).
+* [etcd implementation](https://github.com/etcd-io/etcd/tree/master/clientv3)
+* [Jocko, Kafka implemented in Golang](https://github.com/travisjeffery/jocko/tree/master/commitlog)
+* [Paul Banks's raft-wal](https://github.com/banks/raft-wal)
