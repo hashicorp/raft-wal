@@ -10,7 +10,7 @@ import (
 
 	"github.com/hashicorp/go-msgpack/codec"
 	"github.com/hashicorp/raft"
-	"github.com/notnoop/raft-wal2/log"
+	"github.com/notnoop/raft-wal/log"
 )
 
 var (
