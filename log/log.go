@@ -316,7 +316,7 @@ func (l *log) truncateTailImpl(index uint64) error {
 	if err != nil {
 		return err
 	}
-	err := l.syncDir()
+	err = l.syncDir()
 	if err != nil {
 		return err
 	}
