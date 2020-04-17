@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/coreos/etcd/pkg/fileutil"
 )
 
 const defaultLogChunkSize = 4096
@@ -26,6 +28,8 @@ type Log interface {
 
 	TruncateTail(index uint64) error
 	TruncateHead(index uint64) error
+
+	Close() error
 }
 
 type UserLogConfig struct {
@@ -47,9 +51,10 @@ type LogConfig struct {
 }
 
 type log struct {
-	mu     sync.RWMutex
-	dir    string
-	config LogConfig
+	mu      sync.RWMutex
+	dir     string
+	dirFile *os.File
+	config  LogConfig
 
 	lf *lockFile
 
@@ -66,6 +71,11 @@ type log struct {
 }
 
 func NewLog(dir string, c LogConfig) (*log, error) {
+
+	dirFile, err := fileutil.OpenDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open directory: %v", err)
+	}
 
 	lf, err := newLockFile(filepath.Join(dir, "lock"), c.NoSync)
 	if err != nil {
@@ -87,7 +97,7 @@ func NewLog(dir string, c LogConfig) (*log, error) {
 	var active *segment
 	if len(bases) == 0 {
 		bases = append(bases, 1)
-		active, err = newSegment(filepath.Join(dir, segmentName(1)), 1, true, c)
+		active, err = openSegment(filepath.Join(dir, segmentName(1)), 1, true, c)
 		if err != nil {
 			return nil, err
 		}
@@ -96,6 +106,7 @@ func NewLog(dir string, c LogConfig) (*log, error) {
 
 	l := &log{
 		dir:                       dir,
+		dirFile:                   dirFile,
 		lf:                        lf,
 		firstIndex:                c.KnownFirstIndex,
 		firstIndexUpdatedCallback: c.FirstIndexUpdatedCallback,
@@ -107,6 +118,7 @@ func NewLog(dir string, c LogConfig) (*log, error) {
 	// delete old files if they present from older run
 	l.deleteOldLogFiles()
 	l.redoPendingTransaction()
+	l.syncDir()
 
 	return l, nil
 }
@@ -159,7 +171,7 @@ func (l *log) segmentFor(index uint64) (*segment, error) {
 		return l.cachedSegment, nil
 	}
 
-	seg, err := newSegment(filepath.Join(l.dir, segmentName(sBase)), sBase, false, l.config)
+	seg, err := openSegment(filepath.Join(l.dir, segmentName(sBase)), sBase, false, l.config)
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +240,11 @@ func (l *log) maybeStartNewSegment() error {
 }
 
 func (l *log) startNewSegment(nextBase uint64) error {
-	active, err := newSegment(filepath.Join(l.dir, segmentName(nextBase)), nextBase, true, l.config)
+	active, err := openSegment(filepath.Join(l.dir, segmentName(nextBase)), nextBase, true, l.config)
+	if err != nil {
+		return err
+	}
+	err = l.syncDir()
 	if err != nil {
 		return err
 	}
@@ -293,6 +309,8 @@ func (l *log) truncateTailImpl(index uint64) error {
 		}
 	}
 	l.segmentBases = toKeep
+
+	l.clearCachedSegment()
 
 	err := l.startNewSegment(index)
 	if err != nil {
@@ -360,4 +378,37 @@ func (l *log) redoPendingTransaction() error {
 	default:
 		return fmt.Errorf("unknown command: %v", c.Type)
 	}
+}
+
+func (l *log) clearCachedSegment() error {
+	l.csMu.Lock()
+	defer l.csMu.Unlock()
+
+	c := l.cachedSegment
+	l.cachedSegment = nil
+
+	if c != nil {
+		return l.cachedSegment.Close()
+	}
+	return nil
+}
+
+func (l *log) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	err := l.activeSegment.Close()
+	berr := l.clearCachedSegment()
+	if err != nil {
+		return err
+	}
+	return berr
+}
+
+func (l *log) syncDir() error {
+	if l.config.NoSync {
+		return nil
+	}
+
+	return fileutil.Fsync(l.dirFile)
 }

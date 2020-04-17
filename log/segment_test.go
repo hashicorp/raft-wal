@@ -46,7 +46,7 @@ func TestSegment_Basic(t *testing.T) {
 			fp := filepath.Join(dir, "testsegment_"+c.name)
 			config := LogConfig{UserLogConfig: c.config}
 
-			s, err := newSegment(fp, 1, true, config)
+			s, err := openSegment(fp, 1, true, config)
 			require.NoError(t, err)
 			defer s.Close()
 
@@ -111,7 +111,7 @@ func TestSegment_OtherBase(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			fp := filepath.Join(dir, "testsegment_"+c.name)
 			config := LogConfig{UserLogConfig: c.config}
-			s, err := newSegment(fp, baseIndex, true, config)
+			s, err := openSegment(fp, baseIndex, true, config)
 			require.NoError(t, err)
 			defer s.Close()
 
@@ -201,14 +201,14 @@ func TestSegment_OpenningFiles_Sealed(t *testing.T) {
 
 	// now open file again
 	// fails to open for write again
-	_, err = newSegment(fp, baseIndex, true, testLogConfig)
+	_, err = openSegment(fp, baseIndex, true, testLogConfig)
 	require.EqualError(t, err, errSealedFile.Error())
 
 	// fails to open for wront index again
-	_, err = newSegment(fp, 10, false, testLogConfig)
+	_, err = openSegment(fp, 10, false, testLogConfig)
 	require.EqualError(t, err, fmt.Sprintf("mismatch base index: %v != 10", baseIndex))
 
-	s2, err := newSegment(fp, baseIndex, false, testLogConfig)
+	s2, err := openSegment(fp, baseIndex, false, testLogConfig)
 	require.NoError(t, err)
 
 	require.Equal(t, s.baseIndex, s2.baseIndex)
@@ -234,7 +234,7 @@ func TestSegment_OpenningFiles_Unsealed(t *testing.T) {
 
 	fp := filepath.Join(dir, "testsegment_otherbase")
 
-	s, err := newSegment(fp, 1, true, testLogConfig)
+	s, err := openSegment(fp, 1, true, testLogConfig)
 	require.NoError(t, err)
 	defer s.Close()
 
@@ -255,7 +255,7 @@ func TestSegment_OpenningFiles_Unsealed(t *testing.T) {
 
 	// now open file again
 	// fails to open for write again
-	s2, err := newSegment(fp, 1, true, testLogConfig)
+	s2, err := openSegment(fp, 1, true, testLogConfig)
 	require.NoError(t, err)
 
 	require.Equal(t, s.baseIndex, s2.baseIndex)
@@ -336,7 +336,7 @@ func testSegment(t *testing.T, baseIndex, sampleData uint64) *segment {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 
 	fp := filepath.Join(dir, "testsegment")
-	s, err := newSegment(fp, baseIndex, true, testLogConfig)
+	s, err := openSegment(fp, baseIndex, true, testLogConfig)
 	require.NoError(t, err)
 	t.Cleanup(func() { s.Close() })
 

@@ -75,15 +75,15 @@ func parseSegmentHeader(b [segment_header_size]byte) (baseIndex uint64, compress
 	return binary.BigEndian.Uint64(b[18:26]), LogCompression(b[17]), sealed, indexOffset, indexRecSize, nil
 }
 
-func newSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig) (*segment, error) {
+func openSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig) (*segment, error) {
 	if fileutil.Exist(fp) {
-		return openSegment(fp, baseIndex, forWrite, config)
+		return openExistingSegment(fp, baseIndex, forWrite, config)
 	}
 
 	return createSegment(fp, baseIndex, forWrite, config)
 }
 
-func openSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig) (*segment, error) {
+func openExistingSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig) (*segment, error) {
 	rdf := os.O_RDONLY
 	if forWrite {
 		rdf = os.O_RDWR
