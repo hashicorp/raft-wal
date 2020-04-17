@@ -316,6 +316,10 @@ func (l *log) truncateTailImpl(index uint64) error {
 	if err != nil {
 		return err
 	}
+	err := l.syncDir()
+	if err != nil {
+		return err
+	}
 
 	l.lastIndex = index - 1
 	return l.lf.commit()
