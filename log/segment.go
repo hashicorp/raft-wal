@@ -192,7 +192,7 @@ func createSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig)
 		return nil, err
 	}
 
-	if err := fileutil.Preallocate(f, 64*1024*1024, true); err != nil {
+	if err := fileutil.Preallocate(f, 10*1024*1024, true); err != nil {
 		return nil, err
 	}
 

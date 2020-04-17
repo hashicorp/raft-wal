@@ -294,7 +294,7 @@ func (l *log) truncateTailImpl(index uint64) error {
 	}
 	l.segmentBases = toKeep
 
-	err = l.startNewSegment(index)
+	err := l.startNewSegment(index)
 	if err != nil {
 		return err
 	}

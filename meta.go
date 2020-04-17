@@ -145,9 +145,11 @@ func (w *wal) writeMetaPage() error {
 		return fmt.Errorf("failed to persist meta: %v", err)
 	}
 
-	err = fileutil.Fdatasync(w.metaFile)
-	if err != nil {
-		return fmt.Errorf("failed to persist meta: %v", err)
+	if !w.config.NoSync {
+		err = fileutil.Fdatasync(w.metaFile)
+		if err != nil {
+			return fmt.Errorf("failed to persist meta: %v", err)
+		}
 	}
 
 	return nil
@@ -239,9 +241,11 @@ func (w *wal) createMetaPage(path string) error {
 		return fmt.Errorf("failed to create meta.db file: %v", err)
 	}
 
-	err = fileutil.Fsync(f)
-	if err != nil {
-		return fmt.Errorf("failed to persist meta: %v", err)
+	if !w.config.NoSync {
+		err = fileutil.Fsync(f)
+		if err != nil {
+			return fmt.Errorf("failed to persist meta: %v", err)
+		}
 	}
 
 	w.meta = meta

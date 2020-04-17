@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/hashicorp/go-msgpack/codec"
@@ -34,13 +35,40 @@ type wal struct {
 	metaFile *os.File
 	meta     *meta
 
-	log log.Log
-	dir string
+	log    log.Log
+	dir    string
+	config LogConfig
 }
 
 func NewWAL(dir string, c LogConfig) (*wal, error) {
-	return nil, fmt.Errorf("not implemented yet")
+	wal := &wal{
+		dir:    dir,
+		config: c,
+	}
 
+	err := wal.restoreMetaPage(filepath.Join(dir, "meta"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create meta: %v", err)
+	}
+
+	wal.log, err = log.NewLog(dir, log.LogConfig{
+		KnownFirstIndex:           wal.meta.FirstIndex,
+		FirstIndexUpdatedCallback: wal.setFirstIndex,
+		UserLogConfig:             c,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create log: %v", err)
+	}
+
+	return wal, nil
+
+}
+
+func (w *wal) setFirstIndex(newIndex uint64) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	return w.setFirstIndexLocked(newIndex)
 }
 
 // FirstIndex returns the first index written. 0 for no entries.
@@ -85,11 +113,13 @@ func (w *wal) StoreLogs(logs []*raft.Log) error {
 
 	var berr error
 	bytes := func() []byte {
-		if i < len(logs) {
+		if i >= len(logs) {
 			return nil
 		}
 
 		l := logs[i]
+		i++
+
 		if l.Index != lastIndex+1 {
 			berr = fmt.Errorf("storing non-consequetive logs: %v != %v", l.Index, lastIndex+1)
 			return nil
@@ -127,4 +157,9 @@ func (w *wal) DeleteRange(min, max uint64) error {
 
 	return fmt.Errorf("deleting mid ranges not supported [%v, %v] is in [%v, %v]",
 		min, max, firstIdx, lastIdx)
+}
+
+func (w *wal) Close() error {
+	// TODO: implement me
+	return nil
 }
