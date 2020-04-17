@@ -88,14 +88,14 @@ The following are known issues and things we should consider:
 
 ## Bibliography
 
-**Files and Crash Recovery***
+**Files and Crash Recovery**
 * [Files are hard](https://danluu.com/file-consistency/)
 * [Files are fraught with peril](https://danluu.com/deconstruct-files/)
-* [Ensuring data reaches disk](https://lwn.net/Articles/457667/**
+* [Ensuring data reaches disk](https://lwn.net/Articles/457667/)
 
 **DB Design and Storage File layout**
 * [BoltDB Implementation](https://github.com/boltdb/bolt)
-* LMVDB Design: [slides](https://www.snia.org/sites/default/files/SDC15_presentations/database/HowardChu_The_Lighting_Memory_Database.pdf), [talk](https://www.youtube.com/watch?v=tEa5sAh-kVk**.
+* LMVDB Design: [slides](https://www.snia.org/sites/default/files/SDC15_presentations/database/HowardChu_The_Lighting_Memory_Database.pdf), [talk](https://www.youtube.com/watch?v=tEa5sAh-kVk)
 * [SQLite file layout](https://www.sqlite.org/fileformat.html)
 * [PostgreSQL directory and file layout](https://www.postgresql.org/docs/9.0/storage-file-layout.html)
 
