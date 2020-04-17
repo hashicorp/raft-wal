@@ -24,7 +24,7 @@ The implementation uses a double-buffering technique, established by [`LMDB`](ht
 
 The key aspect of double-buffering is that the meta file contains two physical slots for storing data: one current and one unused.  On update, the write uses the unused slot and mark it with a higher version number; the commit occurs when the write is written successfully.  On restore, the two slots are compared and the slot with valid data and higher version number is chosen as the current on.  A checksum is used to identify torn writes.
 
-#### `raft.LogStore**
+#### `raft.LogStore`
 
 The Log Store uses a series of files, called segments, that contain contigious
 log entries. The log entries are written in sequence. The number of log entries
@@ -74,6 +74,12 @@ The following are known issues and things we should consider:
 
 * Implement encryption wrappers!  Let's encrypt log entries
 
+* Segment files must be under 4GB, and will fail unexpectedly if `SegmentChunkSize` isn't set correctly
+  * Log entries are generally under 256KB.  Log entries larger than 4MB can cause network and latency issues
+  * This implementation segments purely on number of segments and all batched entries are persisted in the same ssegment file.
+  * Generally, 4GB limit isn't a concern and should mean that `SegmentChunkSize` should be smaller.
+  * consider documenting knobs and add a warning about file size or super large SegmentChunkSize values
+
 * Review Checksum use:
   * the seal byte and index offset update happen in place without a checksum.  Should in a single sector, so hopefully atomic!
   * log entries are checksumed individually.  Etcd builds checksum based on history as well
@@ -82,10 +88,18 @@ The following are known issues and things we should consider:
 
 ## Bibliography
 
+**Files and Crash Recovery***
 * [Files are hard](https://danluu.com/file-consistency/)
 * [Files are fraught with peril](https://danluu.com/deconstruct-files/)
+* [Ensuring data reaches disk](https://lwn.net/Articles/457667/**
+
+**DB Design and Storage File layout**
 * [BoltDB Implementation](https://github.com/boltdb/bolt)
-* LMVDB Design: [slides](https://www.snia.org/sites/default/files/SDC15_presentations/database/HowardChu_The_Lighting_Memory_Database.pdf), [talk](https://www.youtube.com/watch?v=tEa5sAh-kVk).
+* LMVDB Design: [slides](https://www.snia.org/sites/default/files/SDC15_presentations/database/HowardChu_The_Lighting_Memory_Database.pdf), [talk](https://www.youtube.com/watch?v=tEa5sAh-kVk**.
+* [SQLite file layout](https://www.sqlite.org/fileformat.html)
+* [PostgreSQL directory and file layout](https://www.postgresql.org/docs/9.0/storage-file-layout.html)
+
+**WAL implementations**
 * [etcd implementation](https://github.com/etcd-io/etcd/tree/master/clientv3)
 * [Jocko, Kafka implemented in Golang](https://github.com/travisjeffery/jocko/tree/master/commitlog)
 * [Paul Banks's raft-wal](https://github.com/banks/raft-wal)
