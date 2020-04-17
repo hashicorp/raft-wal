@@ -100,6 +100,6 @@ The following are known issues and things we should consider:
 * [PostgreSQL directory and file layout](https://www.postgresql.org/docs/9.0/storage-file-layout.html)
 
 **WAL implementations**
-* [etcd implementation](https://github.com/etcd-io/etcd/tree/master/clientv3)
+* [etcd implementation](https://github.com/etcd-io/etcd/tree/master/wal)
 * [Jocko, Kafka implemented in Golang](https://github.com/travisjeffery/jocko/tree/master/commitlog)
 * [Paul Banks's raft-wal](https://github.com/banks/raft-wal)
