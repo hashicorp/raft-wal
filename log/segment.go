@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/coreos/etcd/pkg/fileutil"
+	"github.com/hashicorp/raft"
 )
 
 var (
@@ -30,7 +31,6 @@ const (
 
 var (
 	errOutOfSequence = errors.New("out of sequence index")
-	errLogNotFound   = errors.New("log entry not found")
 	errWrongSegment  = errors.New("log predates this segment")
 	errSealedFile    = errors.New("file was sealed; cannot be opened for write")
 	errReadOnlyFile  = errors.New("file is read only")
@@ -269,8 +269,8 @@ func (s *segment) readRecordAt(offset, rl uint32, index uint64, out []byte) (int
 		return n, fmt.Errorf("record too small: %v != %v; %v", n, lLength, record)
 	}
 	return n, nil
-
 }
+
 func (s *segment) GetLog(index uint64, out []byte) (int, error) {
 	s.offsetLock.RLock()
 	defer s.offsetLock.RUnlock()
@@ -278,7 +278,7 @@ func (s *segment) GetLog(index uint64, out []byte) (int, error) {
 	if index < s.baseIndex {
 		return 0, errWrongSegment
 	} else if index >= s.baseIndex+uint64(len(s.offsets)) {
-		return 0, errLogNotFound
+		return 0, raft.ErrLogNotFound
 	}
 
 	li := index - s.baseIndex

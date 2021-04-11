@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/hashicorp/raft"
 	"github.com/stretchr/testify/require"
 )
 
@@ -147,7 +148,7 @@ func Test_Log_ReadsFromMultipleSegments(t *testing.T) {
 	}
 
 	_, err := log.GetLog(21)
-	require.EqualError(t, err, errLogNotFound.Error())
+	require.EqualError(t, err, raft.ErrLogNotFound.Error())
 }
 
 func TestLog_TruncateHead(t *testing.T) {
@@ -169,7 +170,7 @@ func TestLog_TruncateHead(t *testing.T) {
 			// all head queries should error
 			for j := uint64(1); j <= i; j++ {
 				_, err := log.GetLog(j)
-				require.EqualError(t, err, errLogNotFound.Error())
+				require.EqualError(t, err, raft.ErrLogNotFound.Error())
 			}
 			for j := uint64(i + 1); j <= entries; j++ {
 				b, err := log.GetLog(j)
@@ -178,7 +179,7 @@ func TestLog_TruncateHead(t *testing.T) {
 			}
 
 			_, err = log.GetLog(entries + 1)
-			require.EqualError(t, err, errLogNotFound.Error())
+			require.EqualError(t, err, raft.ErrLogNotFound.Error())
 
 			// insertion after deletion is fine
 			err = log.StoreLogs(entries+1, stringsIterator([]string{"after deletion 1", "after deletion 2"}))
@@ -216,7 +217,7 @@ func TestLog_TruncateTail(t *testing.T) {
 		}
 		for j := i; j <= entries+2; j++ {
 			_, err := log.GetLog(j)
-			require.EqualError(t, err, errLogNotFound.Error())
+			require.EqualError(t, err, raft.ErrLogNotFound.Error())
 		}
 
 		// insertion after deletion must use new index

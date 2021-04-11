@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/coreos/etcd/pkg/fileutil"
+	"github.com/hashicorp/raft"
 )
 
 const defaultLogChunkSize = 4096
@@ -152,7 +153,7 @@ func (l *log) segmentFor(index uint64) (*segment, error) {
 	firstIdx, lastIdx := l.firstIndex, l.lastIndex
 
 	if index < firstIdx || index > lastIdx {
-		return nil, errLogNotFound
+		return nil, raft.ErrLogNotFound
 	}
 
 	if index >= l.activeSegment.baseIndex {
@@ -189,7 +190,7 @@ func (l *log) GetLog(index uint64) ([]byte, error) {
 
 	s, err := l.segmentFor(index)
 	if err != nil {
-		return nil, err
+		return nil, raft.ErrLogNotFound // fmt.Errorf("no segment found for index=%d: %v", index, err)
 	}
 
 	out := make([]byte, 1024*1024)
