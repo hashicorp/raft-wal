@@ -190,7 +190,7 @@ func (l *log) GetLog(index uint64) ([]byte, error) {
 
 	s, err := l.segmentFor(index)
 	if err != nil {
-		return nil, raft.ErrLogNotFound // fmt.Errorf("no segment found for index=%d: %v", index, err)
+		return nil, raft.ErrLogNotFound
 	}
 
 	out := make([]byte, 1024*1024)
