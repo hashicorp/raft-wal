@@ -16,7 +16,7 @@ func segmentName(baseIndex uint64) string {
 var pathReg = regexp.MustCompile(`^wal-([0-9a-fA-F]{16}).log$`)
 
 func segmentsIn(dir string) ([]uint64, error) {
-	files, err := fileutil.ReadDir(dir, fileutil.WithExt(".log"))
+	files, err := fileutil.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}

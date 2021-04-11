@@ -15,7 +15,7 @@ import (
 	"github.com/hashicorp/raft"
 	raftboltdb "github.com/hashicorp/raft-boltdb"
 	raftwal "github.com/notnoop/raft-wal"
-	chart "github.com/wcharczuk/go-chart"
+	chart "github.com/wcharczuk/go-chart/v2"
 )
 
 func main() {
