@@ -157,7 +157,7 @@ func (w *wal) writeMetaPage() error {
 
 func (w *wal) restoreMetaPage(path string) error {
 	// open file if it is present
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDWR, 0600)
 	if os.IsNotExist(err) {
 		return w.createMetaPage(path)
 	} else if err != nil {
