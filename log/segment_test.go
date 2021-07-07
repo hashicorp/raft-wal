@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/hashicorp/raft"
 	"github.com/stretchr/testify/require"
 )
 
@@ -76,10 +77,10 @@ func TestSegment_Basic(t *testing.T) {
 			}
 
 			_, err = s.GetLog(uint64(len(logs)+1), out)
-			require.EqualError(t, err, errLogNotFound.Error())
+			require.EqualError(t, err, raft.ErrLogNotFound.Error())
 
 			_, err = s.GetLog(uint64(len(logs))+100, out)
-			require.EqualError(t, err, errLogNotFound.Error())
+			require.EqualError(t, err, raft.ErrLogNotFound.Error())
 
 			_, err = s.StoreLogs(1, stringsIterator(moreLogs))
 			require.Error(t, err)
@@ -141,10 +142,10 @@ func TestSegment_OtherBase(t *testing.T) {
 			}
 
 			_, err = s.GetLog(baseIndex+uint64(len(logs)+1), out)
-			require.EqualError(t, err, errLogNotFound.Error())
+			require.EqualError(t, err, raft.ErrLogNotFound.Error())
 
 			_, err = s.GetLog(baseIndex+uint64(len(logs))+100, out)
-			require.EqualError(t, err, errLogNotFound.Error())
+			require.EqualError(t, err, raft.ErrLogNotFound.Error())
 
 			_, err = s.StoreLogs(1, stringsIterator(moreLogs))
 			require.Error(t, err)
