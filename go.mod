@@ -1,4 +1,4 @@
-module github.com/notnoop/raft-wal
+module github.com/hashicorp/raft-wal
 
 go 1.15
 
