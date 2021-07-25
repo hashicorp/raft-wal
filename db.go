@@ -27,7 +27,6 @@ func New(dir string) (*wal, error) {
 type FileWALLog interface {
 	raft.LogStore
 	Close() error
-	DeleteAll() error
 	// GetSealedLogPath returns the sealed segment file that contains index
 	// or an error if none is found.  A nil SegmentFile with no error
 	// is returned if index is part of the active segment, i.e. the segment
@@ -156,10 +155,6 @@ func (w *wal) StoreLogs(logs []*raft.Log) error {
 	}
 
 	return berr
-}
-
-func (w *wal) DeleteAll() error {
-	return w.log.TruncateHead(w.log.LastIndex())
 }
 
 // DeleteRange deletes a range of log entries. The range is inclusive.
