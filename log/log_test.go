@@ -153,7 +153,7 @@ func Test_Log_ReadsFromMultipleSegments(t *testing.T) {
 
 func TestLog_TruncateHead(t *testing.T) {
 	entries := uint64(22)
-	for i := uint64(1); i < entries; i++ {
+	for i := uint64(1); i <= entries; i++ {
 		t.Run(fmt.Sprintf("entries:%v truncate_head:%v", entries, i), func(t *testing.T) {
 
 			log := createTestLogWithMultipleSegments(t, entries, 4)
@@ -163,7 +163,11 @@ func TestLog_TruncateHead(t *testing.T) {
 			require.NoError(t, err)
 
 			require.Equal(t, i+1, log.FirstIndex())
-			require.Equal(t, entries, log.LastIndex())
+			expectedLastIndex := entries
+			if i == entries {
+				expectedLastIndex = 0
+			}
+			require.Equal(t, expectedLastIndex, log.LastIndex())
 
 			// check all head queries error now
 

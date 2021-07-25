@@ -1,12 +1,14 @@
 package log
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 
 	"github.com/coreos/etcd/pkg/fileutil"
+	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
 )
 
@@ -20,6 +22,11 @@ const (
 	LogCompressionGZip
 )
 
+type SegmentFile struct {
+	Path     string
+	LogCount int
+}
+
 type Log interface {
 	FirstIndex() uint64
 	LastIndex() uint64
@@ -31,6 +38,8 @@ type Log interface {
 	TruncateHead(index uint64) error
 
 	Close() error
+
+	GetSealedLogPath(index uint64) (*SegmentFile, error)
 }
 
 type UserLogConfig struct {
@@ -41,6 +50,8 @@ type UserLogConfig struct {
 	Compression LogCompression
 
 	TruncateOnFailure bool
+
+	Logger hclog.Logger
 }
 
 type LogConfig struct {
@@ -51,6 +62,7 @@ type LogConfig struct {
 	UserLogConfig
 }
 
+// log manages a collection of segment files on disk.
 type log struct {
 	mu      sync.RWMutex
 	dir     string
@@ -59,8 +71,11 @@ type log struct {
 
 	lf *lockFile
 
+	// firstIndex is the first log index known to Raft
 	firstIndex uint64
-	lastIndex  uint64
+	// lastIndex is the last log index known; the next StoreLogs call
+	// must be for an index of lastIndex+1.
+	lastIndex uint64
 
 	segmentBases  []uint64
 	activeSegment *segment
@@ -121,6 +136,16 @@ func NewLog(dir string, c LogConfig) (*log, error) {
 	l.redoPendingTransaction()
 	l.syncDir()
 
+	s, err := l.segmentForUnsafe(bases[len(bases)-1])
+	if err != nil {
+		return nil, err
+	}
+	idx, err := s.lastIndexInFile()
+	if err != nil {
+		return nil, err
+	}
+	l.lastIndex = idx
+
 	return l, nil
 }
 
@@ -132,10 +157,21 @@ func (l *log) FirstIndex() uint64 {
 }
 
 func (l *log) updateIndexs(firstWriteIndex uint64, count int) error {
-	if l.firstIndex == 0 && count != 0 {
+	if count == 0 {
+		return nil
+	}
+
+	switch {
+	case l.firstIndex == 0:
 		l.firstIndex = firstWriteIndex
-		l.lastIndex = uint64(count)
-	} else {
+		err := l.firstIndexUpdatedCallback(firstWriteIndex)
+		if err != nil {
+			return err
+		}
+		l.lastIndex = l.firstIndex + uint64(count) - 1
+	case l.lastIndex == 0:
+		l.lastIndex = l.firstIndex + uint64(count) - 1
+	default:
 		l.lastIndex += uint64(count)
 	}
 
@@ -150,13 +186,21 @@ func (l *log) LastIndex() uint64 {
 }
 
 func (l *log) segmentFor(index uint64) (*segment, error) {
-	firstIdx, lastIdx := l.firstIndex, l.lastIndex
-
-	if index < firstIdx || index > lastIdx {
-		return nil, raft.ErrLogNotFound
+	if index > l.lastIndex {
+		return nil, fmt.Errorf("index too big (%d > %d): %w", index, l.lastIndex, raft.ErrLogNotFound)
 	}
 
-	if index >= l.activeSegment.baseIndex {
+	return l.segmentForUnsafe(index)
+}
+
+func (l *log) segmentForUnsafe(index uint64) (*segment, error) {
+	if index < l.firstIndex {
+		return nil, fmt.Errorf("index too small (%d < %d): %w", index, l.firstIndex, raft.ErrLogNotFound)
+	}
+
+	// TODO remove first clause. Probably instead we should create an activeSegment,
+	// e.g. for after a snapshot restore based on another node's logs.
+	if l.activeSegment != nil && index >= l.activeSegment.baseIndex {
 		return l.activeSegment, nil
 	}
 
@@ -202,12 +246,19 @@ func (l *log) GetLog(index uint64) ([]byte, error) {
 	return out[:n], nil
 }
 
+// StoreLogs consumes the iterator next, writing each log/byteslice it emits
+// to the log store.  The first value returned by next has log index nextIndex.
+// TODO we currently assume all byteslices will fit in the current segment,
+// we should instead check for full segment on each write.
 func (l *log) StoreLogs(nextIndex uint64, next func() []byte) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if nextIndex != l.lastIndex+1 {
-		return fmt.Errorf("out of order insertion %v != %v", nextIndex, l.lastIndex+1)
+	// If lastIndex is zero don't enforce this check.  After a total log
+	// deletion (e.g. due to a snapshot restore), the raft lib expects LastIndex
+	// to return 0.
+	if l.lastIndex != 0 && nextIndex != l.lastIndex+1 {
+		return fmt.Errorf("out of order insertion nextIndex=%v != lastIndex+1=%v", nextIndex, l.lastIndex+1)
 	}
 
 	err := l.maybeStartNewSegment()
@@ -326,6 +377,11 @@ func (l *log) truncateTailImpl(index uint64) error {
 	return l.lf.commit()
 }
 
+// TruncateHead deletes all entries up to and including index. After returning
+// a non-nil error, l.firstIndex will be index+1.  Note that while we delete files
+// consisting solely of deleted log indexes, the file that contains a mix of
+// deleted and kept indexes will not be scrubbed of the deleted records.  We
+// rely on the meta page to keep track of what the real "firstIndex" is.
 func (l *log) TruncateHead(index uint64) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -336,32 +392,52 @@ func (l *log) TruncateHead(index uint64) error {
 		return nil
 	}
 
-	if index >= l.lastIndex {
-		return fmt.Errorf("deletion would render log empty")
-	}
+	l.firstIndex = index + 1
 
-	err := l.firstIndexUpdatedCallback(index + 1)
+	err := l.firstIndexUpdatedCallback(l.firstIndex)
 	if err != nil {
 		return err
 	}
-	l.firstIndex = index + 1
 
-	l.deleteOldLogFiles()
+	if err := l.deleteOldLogFiles(); err != nil {
+		return err
+	}
 
+	seg, err := l.segmentFor(index)
+	if err != nil && !errors.Is(err, raft.ErrLogNotFound) {
+		return err
+	}
+	if seg == l.activeSegment {
+		if err := l.clearCachedSegment(); err != nil {
+			return err
+		}
+	}
+
+	deleteAll := index >= l.lastIndex
+	if deleteAll {
+		l.lastIndex = 0
+		err := l.startNewSegment(index + 1)
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-func (l *log) deleteOldLogFiles() {
+func (l *log) deleteOldLogFiles() error {
 	delIdx := segmentContainingIndex(l.segmentBases, l.firstIndex)
 
 	toDelete, toKeep := l.segmentBases[:delIdx], l.segmentBases[delIdx:]
 
 	for _, sb := range toDelete {
 		fp := filepath.Join(l.dir, segmentName(sb))
-		os.Remove(fp)
+		if err := os.Remove(fp); err != nil {
+			return fmt.Errorf("error removing old log segment from disk: %v", err)
+		}
 	}
 
 	l.segmentBases = toKeep
+	return nil
 }
 
 func (l *log) redoPendingTransaction() error {
@@ -393,7 +469,7 @@ func (l *log) clearCachedSegment() error {
 	l.cachedSegment = nil
 
 	if c != nil {
-		return l.cachedSegment.Close()
+		return c.Close()
 	}
 	return nil
 }
@@ -416,4 +492,23 @@ func (l *log) syncDir() error {
 	}
 
 	return fileutil.Fsync(l.dirFile)
+}
+
+func (l *log) GetSealedLogPath(index uint64) (*SegmentFile, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.activeSegment.baseIndex <= index {
+		return nil, nil
+	}
+
+	s, err := l.segmentFor(index)
+	if err != nil {
+		return nil, err
+	}
+
+	return &SegmentFile{
+		Path:     s.f.Name(),
+		LogCount: len(s.offsets),
+	}, nil
 }

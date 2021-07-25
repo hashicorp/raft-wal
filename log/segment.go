@@ -27,6 +27,17 @@ const (
 	segmentDataInitOffset = 512
 	indexSentinelIndex    = math.MaxUint64
 	sealFlag              = 0xFF
+
+	segmentHeaderStartOffsetVersion     = 16
+	segmentHeaderStartOffsetCompression = 17
+	segmentHeaderStartOffsetBaseIndex   = 18
+	segmentHeaderStartOffsetSeal        = segmentHeaderStartOffsetBaseIndex + 8
+
+	// These offsets are relative to segmentHeaderStartOffsetSeal
+	segmentSealStartOffsetSealFlag    = 0
+	segmentSealStartOffsetIndexOffset = segmentSealStartOffsetSealFlag + 1
+	segmentSealStartOffsetIndexSize   = segmentSealStartOffsetIndexOffset + 4
+	segmentHeaderSealSize             = 9
 )
 
 var (
@@ -36,16 +47,23 @@ var (
 	errReadOnlyFile  = errors.New("file is read only")
 )
 
+// segment manages a single file that contains a sequence of logs.
 type segment struct {
+	// baseIndex is the index of the first record in the file, or, for a newly
+	// created segment, the first record that will be written to the file.
 	baseIndex    uint64
 	openForWrite bool
 	config       LogConfig
 
+	// writeLock must be held when making any changes to the segment file.
 	writeLock sync.Mutex
 
+	// offsetLock must be held when modifying offsets.
 	offsetLock sync.RWMutex
-	offsets    []uint32
-	nextOffset uint32
+	// offsets are the file offsets of each log record.
+	offsets []uint32
+	// nextOffset is the file offset where the next log record should be written.
+	nextOffset int
 
 	f  *os.File
 	bw *bufio.Writer
@@ -54,42 +72,51 @@ type segment struct {
 	loadTransformers    []transformer
 }
 
+// setSegmentHeader populates b with a segment header based on the other arguments.
 func setSegmentHeader(b *[segment_header_size]byte, baseIndex uint64, config LogConfig) {
 	copy(b[:], segment_magic_bytes)
-	b[16] = segmentVersion
-	b[17] = byte(config.Compression)
-	binary.BigEndian.PutUint64(b[18:26], baseIndex)
+	b[segmentHeaderStartOffsetVersion] = segmentVersion
+	b[segmentHeaderStartOffsetCompression] = byte(config.Compression)
+	putU64(b[:], segmentHeaderStartOffsetBaseIndex, baseIndex)
 }
 
-func parseSegmentHeader(b [segment_header_size]byte) (baseIndex uint64, compression LogCompression, sealed bool, indexOffset uint32, indexRecSize uint32, err error) {
+// parseSegmentHeader extracts the header constituents from b.
+func parseSegmentHeader(b [segment_header_size]byte) (baseIndex uint64, compression LogCompression, sealed bool, indexOffset int, indexRecSize int, err error) {
 	if !bytes.Equal(b[:len(segment_magic_bytes)], segment_magic_bytes) {
 		return 0, 0, false, 0, 0, errors.New("invalid file")
 	}
-	if b[16] != segmentVersion {
+	if b[segmentHeaderStartOffsetVersion] != segmentVersion {
 		return 0, 0, false, 0, 0, errors.New("unsupported version")
 	}
 
-	sealed = b[26] == sealFlag
-	indexOffset = binary.BigEndian.Uint32(b[27:31])
-	indexRecSize = binary.BigEndian.Uint32(b[31:35])
-	return binary.BigEndian.Uint64(b[18:26]), LogCompression(b[17]), sealed, indexOffset, indexRecSize, nil
+	sealed = b[segmentHeaderStartOffsetSeal+segmentSealStartOffsetSealFlag] == sealFlag
+	offset := getU32(b[segmentHeaderStartOffsetSeal:], segmentSealStartOffsetIndexOffset)
+	recSize := getU32(b[segmentHeaderStartOffsetSeal:], segmentSealStartOffsetIndexSize)
+	return getU64(b[:], segmentHeaderStartOffsetBaseIndex), LogCompression(b[17]), sealed, int(offset), int(recSize), nil
 }
 
+// openSegment returns a segment for file fp, creating one if it doesn't exist and
+// forWrite is true.  The segment can be appended to if forWrite is true and the
+// segment hasn't been sealed.
 func openSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig) (*segment, error) {
-	if fileutil.Exist(fp) {
+	switch {
+	case fileutil.Exist(fp):
 		return openExistingSegment(fp, baseIndex, forWrite, config)
+	case forWrite:
+		return createSegment(fp, baseIndex, config)
+	default:
+		return nil, fmt.Errorf("segment file %q does not exist", fp)
 	}
-
-	return createSegment(fp, baseIndex, forWrite, config)
 }
 
+// openExistingSegment opens the file with path fp and interprets it as a segment.
 func openExistingSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig) (*segment, error) {
 	rdf := os.O_RDONLY
 	if forWrite {
 		rdf = os.O_RDWR
 	}
 
-	f, err := os.OpenFile(fp, rdf, 0)
+	f, err := os.OpenFile(fp, rdf, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -148,20 +175,22 @@ func openExistingSegment(fp string, baseIndex uint64, forWrite bool, config LogC
 	return s, nil
 }
 
+// loadUnsealedContent reads the log records in an existing segment file to
+// build our in-progress offset index and set s.nextOffset.
 func (s *segment) loadUnsealedContent() error {
 	offsets := make([]uint32, 0, 512)
-	nextOffset := uint32(segmentDataInitOffset)
+	nextOffset := segmentDataInitOffset
 	nextIndex := s.baseIndex
 
-	var data [16]byte
+	var data [recordHeaderSize]byte
 	for {
 		_, err := s.f.ReadAt(data[:], int64(nextOffset))
 		if err != nil {
 			return err
 		}
 
-		foundIndex := binary.BigEndian.Uint64(data[:8])
-		dataLength := binary.BigEndian.Uint32(data[12:16])
+		foundIndex := getU64(data[:], recordHeaderStartOffsetIndex)
+		dataLength := int(getU32(data[:], recordHeaderStartOffsetLength))
 
 		if foundIndex == 0 || foundIndex == indexSentinelIndex {
 			break
@@ -171,7 +200,7 @@ func (s *segment) loadUnsealedContent() error {
 			return fmt.Errorf("mismatched index expected %v != %v", nextIndex, foundIndex)
 		}
 
-		offsets = append(offsets, nextOffset)
+		offsets = append(offsets, uint32(nextOffset))
 		nextOffset += recordSize(dataLength)
 		nextIndex++
 	}
@@ -181,13 +210,11 @@ func (s *segment) loadUnsealedContent() error {
 	return nil
 }
 
-func createSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig) (*segment, error) {
-	rdf := os.O_RDONLY
-	if forWrite {
-		rdf = os.O_RDWR
-	}
-
-	f, err := os.OpenFile(fp, rdf|os.O_CREATE, 0600)
+// createSegment creates a segment backed by a file at path fp, overwriting any
+// file that might already be there.  The segment header is written and the
+// returned segment is positioned ready to receive new logs.
+func createSegment(fp string, baseIndex uint64, config LogConfig) (*segment, error) {
+	f, err := os.OpenFile(fp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return nil, err
 	}
@@ -199,17 +226,18 @@ func createSegment(fp string, baseIndex uint64, forWrite bool, config LogConfig)
 	var header [segment_header_size]byte
 	setSegmentHeader(&header, baseIndex, config)
 	if _, err := f.Write(header[:]); err != nil {
-		os.Remove(fp)
+		_ = os.Remove(fp)
 		return nil, err
 	}
 
 	if _, err := f.Seek(segmentDataInitOffset, io.SeekStart); err != nil {
+		_ = os.Remove(fp)
 		return nil, err
 	}
 
 	return &segment{
 		baseIndex:           baseIndex,
-		openForWrite:        forWrite,
+		openForWrite:        true,
 		config:              config,
 		offsets:             make([]uint32, 0, 512),
 		nextOffset:          segmentDataInitOffset,
@@ -224,15 +252,25 @@ func (s *segment) untransform(data []byte) ([]byte, error) {
 	return runTransformers(s.loadTransformers, data)
 }
 
-func (s *segment) readRecordAt(offset, rl uint32, index uint64, out []byte) (int, error) {
+func getU32(src []byte, offset int) uint32 {
+	return binary.BigEndian.Uint32(src[offset : offset+4])
+}
+func getU64(src []byte, offset int) uint64 {
+	return binary.BigEndian.Uint64(src[offset : offset+8])
+}
+
+// readRecordAt reads a log record of length rl at the given offset and stores it in out.
+// rl is optional as the length can also be read from the log at the cost of an extra read.
+// Returns the length of data written to out and any error encountered.
+func (s *segment) readRecordAt(offset, rl int, index uint64, out []byte) (int, error) {
 	if rl == 0 {
 		var l [4]byte
-		_, err := s.f.ReadAt(l[:], int64(offset+12))
+		_, err := s.f.ReadAt(l[:], int64(offset+recordHeaderStartOffsetLength))
 		if err != nil {
 			return 0, err
 		}
 
-		lf := binary.BigEndian.Uint32(l[:])
+		lf := int(binary.BigEndian.Uint32(l[:]))
 		rl = recordSize(lf)
 	}
 
@@ -241,25 +279,25 @@ func (s *segment) readRecordAt(offset, rl uint32, index uint64, out []byte) (int
 	if err != nil {
 		return 0, err
 	}
-	lIndex := binary.BigEndian.Uint64(record[:8])
+	lIndex := getU64(record, recordHeaderStartOffsetIndex)
 	if lIndex != index {
 		return 0, fmt.Errorf("index mismatch %v != %v", lIndex, index)
 	}
 
-	lChecksum := binary.BigEndian.Uint32(record[8:12])
-	lLength := binary.BigEndian.Uint32(record[12:16])
+	lChecksum := getU32(record, recordHeaderStartOffsetChecksum)
+	lLength := int(getU32(record, recordHeaderStartOffsetLength))
 	lPadding := recordPadding(lLength)
 
-	if 16+lLength+lPadding != rl {
+	if recordHeaderSize+lLength+lPadding != rl {
 		return 0, fmt.Errorf("mismatch length: %v != %v", 16+lLength+lPadding, rl)
 	}
 
-	fChecksum := crc32.Checksum(record[16:16+lLength], crc32Table)
+	fChecksum := crc32.Checksum(record[recordHeaderSize:recordHeaderSize+lLength], crc32Table)
 	if lChecksum != fChecksum {
 		return 0, fmt.Errorf("checksums mismatch")
 	}
 
-	data, err := s.untransform(record[16 : 16+lLength])
+	data, err := s.untransform(record[recordHeaderSize : recordHeaderSize+lLength])
 	if err != nil {
 		return 0, err
 	}
@@ -278,29 +316,47 @@ func (s *segment) GetLog(index uint64, out []byte) (int, error) {
 	if index < s.baseIndex {
 		return 0, errWrongSegment
 	} else if index >= s.baseIndex+uint64(len(s.offsets)) {
-		return 0, raft.ErrLogNotFound
+		return 0, fmt.Errorf("index not in segment (%d > %d+%d): %w", index, s.baseIndex, len(s.offsets), raft.ErrLogNotFound)
 	}
 
 	li := index - s.baseIndex
 
-	var rl uint32
+	var rl int
 	if li == uint64(len(s.offsets)-1) {
-		rl = s.nextOffset - s.offsets[li]
+		rl = s.nextOffset - int(s.offsets[li])
 	} else {
-		rl = s.offsets[li+1] - s.offsets[li]
+		rl = int(s.offsets[li+1] - s.offsets[li])
 	}
 
 	offset := s.offsets[li]
-	return s.readRecordAt(offset, rl, index, out)
+	return s.readRecordAt(int(offset), rl, index, out)
 }
 
 func (s *segment) transform(data []byte) ([]byte, error) {
 	return runTransformers(s.persistTransformers, data)
 }
 
+const (
+	recordHeaderStartOffsetIndex    = 0
+	recordHeaderStartOffsetChecksum = 8
+	recordHeaderStartOffsetLength   = 12
+	recordHeaderSize                = 16
+)
+
 var padding [8]byte
 
-func (s *segment) writeRecord(index uint64, data []byte) (uint32, error) {
+func putU32(dest []byte, offset int, value uint32) {
+	binary.BigEndian.PutUint32(dest[offset:offset+4], value)
+}
+func putU64(dest []byte, offset int, value uint64) {
+	binary.BigEndian.PutUint64(dest[offset:offset+8], value)
+}
+
+// writeRecord passes data through any configured transformers,
+// creates a header for the record, then writes the header,
+// record, and enough padding bytes to 64-bit align the record.
+// Returns the number of bytes written or an error.
+func (s *segment) writeRecord(index uint64, data []byte) (int, error) {
 
 	var rh [16]byte
 	var err error
@@ -313,11 +369,9 @@ func (s *segment) writeRecord(index uint64, data []byte) (uint32, error) {
 	// prepare header
 	checksum := crc32.Checksum(data, crc32Table)
 
-	binary.BigEndian.PutUint64(rh[:8], index)
-	binary.BigEndian.PutUint32(rh[8:12], checksum)
-	l := uint32(len(data))
-	padl := recordPadding(l)
-	binary.BigEndian.PutUint32(rh[12:16], l)
+	putU64(rh[:], recordHeaderStartOffsetIndex, index)
+	putU32(rh[:], recordHeaderStartOffsetChecksum, checksum)
+	putU32(rh[:], recordHeaderStartOffsetLength, uint32(len(data)))
 
 	if _, err := s.bw.Write(rh[:]); err != nil {
 		return 0, err
@@ -325,17 +379,23 @@ func (s *segment) writeRecord(index uint64, data []byte) (uint32, error) {
 	if _, err := s.bw.Write(data); err != nil {
 		return 0, err
 	}
-	if _, err := s.bw.Write(padding[:padl]); err != nil {
+	if _, err := s.bw.Write(padding[:recordPadding(len(data))]); err != nil {
 		return 0, err
 	}
 
-	return recordSize(uint32(len(data))), nil
+	return recordSize(len(data)), nil
 }
 
-func recordSize(dataLen uint32) uint32 {
-	return 16 + dataLen + recordPadding(dataLen)
+func recordSize(dataLen int) int {
+	return recordHeaderSize + dataLen + recordPadding(dataLen)
 }
 
+// StoreLogs consumes the iterator next, writing each log/byteslice it emits
+// to the segment.  index is the log index of the first value returned by next,
+// which must be one greater than the last index written to the segment.
+// In the event of a write or fsync error, we attempt to undo any side effects
+// or partial writes: we rewind the file pointer to where it was when we started,
+// then write zeroes over the end of the file, which may truncate it.
 func (s *segment) StoreLogs(index uint64, next func() []byte) (int, error) {
 	if !s.openForWrite {
 		return 0, errReadOnlyFile
@@ -349,7 +409,7 @@ func (s *segment) StoreLogs(index uint64, next func() []byte) (int, error) {
 	s.offsetLock.RLock()
 	if int(index-s.baseIndex) != len(s.offsets) {
 		s.offsetLock.RUnlock()
-		return 0, errOutOfSequence
+		return 0, fmt.Errorf("index=%d baseIndex=%d lenOffsets=%d err=%w", index, s.baseIndex, len(s.offsets), errOutOfSequence)
 	}
 
 	startingOffset := s.nextOffset
@@ -367,7 +427,7 @@ func (s *segment) StoreLogs(index uint64, next func() []byte) (int, error) {
 			goto ROLLBACK
 		}
 
-		newOffsets = append(newOffsets, nextOffset)
+		newOffsets = append(newOffsets, uint32(nextOffset))
 
 		nextOffset += recSize
 		writtenEntries++
@@ -409,6 +469,7 @@ func (s *segment) Close() error {
 	return s.f.Close()
 }
 
+// parseIndexData deserializes an offset index.
 func parseIndexData(data []byte) ([]uint32, error) {
 	len := binary.BigEndian.Uint32(data[:4])
 	out := make([]uint32, len)
@@ -419,6 +480,8 @@ func parseIndexData(data []byte) ([]uint32, error) {
 	return out, nil
 }
 
+// indexData serializes the offset index as a sequence of big-endian 32-bit words.
+// The first word is the count of offsets.
 func (s *segment) indexData() ([]byte, error) {
 	var buf bytes.Buffer
 
@@ -435,25 +498,27 @@ func (s *segment) indexData() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func (s *segment) writeIndex() (uint32, uint32, error) {
+// writeIndex persists an index of offsets as a special final record.
+// This record always has the magic index value of MaxUint64.
+// Returns the number of bytes written or error.
+func (s *segment) writeIndex() (int, error) {
 	s.offsetLock.RLock()
 	defer s.offsetLock.RUnlock()
 
-	offset := s.nextOffset
 	data, err := s.indexData()
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 
 	recSize, err := s.writeRecord(indexSentinelIndex, data)
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 	if err := s.bw.Flush(); err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 
-	return offset, recSize, nil
+	return recSize, nil
 }
 
 func (s *segment) nextIndex() uint64 {
@@ -463,11 +528,15 @@ func (s *segment) nextIndex() uint64 {
 	return s.baseIndex + uint64(len(s.offsets))
 }
 
+// Seal seals the segment file, which means appending an index
+// and modifying the segment header to store the sealFlag and
+// the index offset and size.
 func (s *segment) Seal() error {
 	s.writeLock.Lock()
 	defer s.writeLock.Unlock()
 
-	offset, recSize, err := s.writeIndex()
+	indexOffset := s.nextOffset
+	indexSize, err := s.writeIndex()
 	if err != nil {
 		return err
 	}
@@ -478,10 +547,10 @@ func (s *segment) Seal() error {
 
 	var b [9]byte
 	b[0] = sealFlag
-	binary.BigEndian.PutUint32(b[1:5], offset)
-	binary.BigEndian.PutUint32(b[5:9], recSize)
+	putU32(b[:], segmentSealStartOffsetIndexOffset, uint32(indexOffset))
+	putU32(b[:], segmentSealStartOffsetIndexSize, uint32(indexSize))
 
-	if _, err := s.f.WriteAt(b[:], 26); err != nil {
+	if _, err := s.f.WriteAt(b[:], segmentHeaderStartOffsetSeal); err != nil {
 		return err
 	}
 
@@ -492,6 +561,8 @@ func (s *segment) Seal() error {
 	return nil
 }
 
+// truncateTail makes index the new next index of the file.  Any log entries
+// that had an index greater or equal will be deleted.
 func (s *segment) truncateTail(index uint64) error {
 	if !s.openForWrite {
 		return errReadOnlyFile
@@ -501,11 +572,21 @@ func (s *segment) truncateTail(index uint64) error {
 		return fmt.Errorf("invalid index, less than base")
 	}
 
+	sealed, err := s.Sealed()
+	if err != nil {
+		return err
+	}
+	if sealed {
+		// TODO we should support truncating sealed files.
+		return errSealedFile
+	}
+
 	s.writeLock.Lock()
 	defer s.writeLock.Unlock()
 
 	diff := int(index - s.baseIndex)
 
+	// TODO should we also be grabbing offsetLock?
 	if diff >= len(s.offsets) {
 		return nil
 	}
@@ -513,7 +594,7 @@ func (s *segment) truncateTail(index uint64) error {
 	newNextOffset := s.offsets[diff]
 	newOffsets := s.offsets[:diff]
 
-	err := s.f.Truncate(int64(newNextOffset))
+	err = s.f.Truncate(int64(newNextOffset))
 	if err != nil {
 		return err
 	}
@@ -528,7 +609,7 @@ func (s *segment) truncateTail(index uint64) error {
 	}
 
 	s.offsets = newOffsets
-	s.nextOffset = newNextOffset
+	s.nextOffset = int(newNextOffset)
 
 	return nil
 }
@@ -541,7 +622,65 @@ func (s *segment) sync() error {
 	return fileutil.Fdatasync(s.f)
 }
 
-func recordPadding(length uint32) uint32 {
-	last := uint32(length) & 0x7
+// recordPadding returns the number of bytes of padding needed to 64-bit align
+// a record.
+func recordPadding(length int) int {
+	last := length & 0x7
 	return (8 - last) & 0x7
+}
+
+// lastIndexInFile returns the last true index contained in the file.  In
+// sealed segments the last record will be an offset index record, with an
+// index value of MaxUInt.  For sealed segments lastIndexInFile returns the
+// index of the penultimate record, i.e. that of the last actual log.
+func (s *segment) lastIndexInFile() (uint64, error) {
+	s.offsetLock.RLock()
+	defer s.offsetLock.RUnlock()
+
+	if len(s.offsets) == 0 {
+		return 0, nil
+	}
+
+	o := len(s.offsets) - 1
+	sealed, err := s.Sealed()
+	if err != nil {
+		return 0, err
+	}
+
+	switch {
+	case sealed && o == 0:
+		return 0, fmt.Errorf("sealed segment has no log records")
+	case sealed:
+		o--
+	}
+
+	return s.indexForRecordAtOffset(int(s.offsets[o]))
+}
+
+// indexForRecordOffset returns the raw value of the index field for the record
+// at recordOffset bytes from the start of the file.
+func (s *segment) indexForRecordAtOffset(recordOffset int) (uint64, error) {
+	var data [recordHeaderSize]byte
+	_, err := s.f.ReadAt(data[:], int64(recordOffset))
+	if err != nil {
+		return 0, err
+	}
+
+	foundIndex := getU64(data[:], recordHeaderStartOffsetIndex)
+	return foundIndex, nil
+}
+
+// Sealed returns true if the segment is sealed.
+func (s *segment) Sealed() (bool, error) {
+	s.offsetLock.RLock()
+	defer s.offsetLock.RUnlock()
+
+	if len(s.offsets) == 0 {
+		return false, nil
+	}
+	lastIndex, err := s.indexForRecordAtOffset(int(s.offsets[len(s.offsets)-1]))
+	if err != nil {
+		return false, err
+	}
+	return lastIndex == indexSentinelIndex, nil
 }

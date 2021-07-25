@@ -31,12 +31,13 @@ log entries. The log entries are written in sequence. The number of log entries
 in each segment is configurable.
 
 Each segment file contain a header with basic config info (e.g. base index,
-compression type), followed by log entries. Once, log entries go beyond the
+compression type), followed by log entries. Once log entries go beyond the
 segment range, the segment is sealed and a final entry containing an index of
 the log entry offsets is written. Once sealed, the file is never modified.
 Before being sealed, the offset of active indexes lives in memory.
 
-Generally, there will be one active segment, where write flows, and many sealed segments containing old indexes.
+Generally, there will be one active segment, where writes flow, and many sealed 
+segments containing old indexes.
 
 Range deletions are tricky, `raft-wal` supports only head or tail truncations (no mid-range):
 * Head truncations are simple: an internal state of the first index is updated and then all segments prior to the index are deleted.

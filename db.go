@@ -10,7 +10,7 @@ import (
 
 	"github.com/hashicorp/go-msgpack/codec"
 	"github.com/hashicorp/raft"
-	"github.com/notnoop/raft-wal/log"
+	"github.com/hashicorp/raft-wal/log"
 )
 
 var (
@@ -24,6 +24,18 @@ func New(dir string) (*wal, error) {
 	return NewWAL(dir, LogConfig{})
 }
 
+type FileWALLog interface {
+	raft.LogStore
+	Close() error
+	DeleteAll() error
+	// GetSealedLogPath returns the sealed segment file that contains index
+	// or an error if none is found.  A nil SegmentFile with no error
+	// is returned if index is part of the active segment, i.e. the segment
+	// file is not yet sealed.
+	GetSealedLogPath(index uint64) (*log.SegmentFile, error)
+}
+
+var _ FileWALLog = (*wal)(nil)
 var _ raft.LogStore = (*wal)(nil)
 var _ raft.StableStore = (*wal)(nil)
 
@@ -123,7 +135,7 @@ func (w *wal) StoreLogs(logs []*raft.Log) error {
 		i++
 
 		if l.Index != lastIndex+1 {
-			berr = fmt.Errorf("storing non-consequetive logs: %v != %v", l.Index, lastIndex+1)
+			berr = fmt.Errorf("storing non-consecutive logs: %v != %v", l.Index, lastIndex+1)
 			return nil
 		}
 		lastIndex = l.Index
@@ -146,6 +158,10 @@ func (w *wal) StoreLogs(logs []*raft.Log) error {
 	return berr
 }
 
+func (w *wal) DeleteAll() error {
+	return w.log.TruncateHead(w.log.LastIndex())
+}
+
 // DeleteRange deletes a range of log entries. The range is inclusive.
 func (w *wal) DeleteRange(min, max uint64) error {
 	firstIdx, _ := w.FirstIndex()
@@ -163,4 +179,8 @@ func (w *wal) DeleteRange(min, max uint64) error {
 
 func (w *wal) Close() error {
 	return w.log.Close()
+}
+
+func (w *wal) GetSealedLogPath(index uint64) (*log.SegmentFile, error) {
+	return w.log.GetSealedLogPath(index)
 }

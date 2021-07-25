@@ -77,18 +77,16 @@ func TestSegment_Basic(t *testing.T) {
 			}
 
 			_, err = s.GetLog(uint64(len(logs)+1), out)
-			require.EqualError(t, err, raft.ErrLogNotFound.Error())
+			require.ErrorIs(t, err, raft.ErrLogNotFound)
 
 			_, err = s.GetLog(uint64(len(logs))+100, out)
-			require.EqualError(t, err, raft.ErrLogNotFound.Error())
+			require.ErrorIs(t, err, raft.ErrLogNotFound)
 
 			_, err = s.StoreLogs(1, stringsIterator(moreLogs))
-			require.Error(t, err)
-			require.Equal(t, errOutOfSequence, err)
+			require.ErrorIs(t, err, errOutOfSequence)
 
 			_, err = s.StoreLogs(1000, stringsIterator(moreLogs))
-			require.Error(t, err)
-			require.Equal(t, errOutOfSequence, err)
+			require.ErrorIs(t, err, errOutOfSequence)
 		})
 	}
 }
@@ -142,22 +140,19 @@ func TestSegment_OtherBase(t *testing.T) {
 			}
 
 			_, err = s.GetLog(baseIndex+uint64(len(logs)+1), out)
-			require.EqualError(t, err, raft.ErrLogNotFound.Error())
+			require.ErrorIs(t, err, raft.ErrLogNotFound)
 
 			_, err = s.GetLog(baseIndex+uint64(len(logs))+100, out)
-			require.EqualError(t, err, raft.ErrLogNotFound.Error())
+			require.ErrorIs(t, err, raft.ErrLogNotFound)
 
 			_, err = s.StoreLogs(1, stringsIterator(moreLogs))
-			require.Error(t, err)
-			require.Equal(t, errOutOfSequence, err)
+			require.ErrorIs(t, err, errOutOfSequence)
 
 			_, err = s.StoreLogs(baseIndex, stringsIterator(moreLogs))
-			require.Error(t, err)
-			require.Equal(t, errOutOfSequence, err)
+			require.ErrorIs(t, err, errOutOfSequence)
 
 			_, err = s.StoreLogs(baseIndex+1000, stringsIterator(moreLogs))
-			require.Error(t, err)
-			require.Equal(t, errOutOfSequence, err)
+			require.ErrorIs(t, err, errOutOfSequence)
 		})
 	}
 }
@@ -178,7 +173,7 @@ func TestSegment_SealingWorks(t *testing.T) {
 	indexOffset := binary.BigEndian.Uint32(sealHeader[1:])
 
 	indexData := make([]byte, 512)
-	n, err := s.readRecordAt(indexOffset, 0, indexSentinelIndex, indexData)
+	n, err := s.readRecordAt(int(indexOffset), 0, indexSentinelIndex, indexData)
 	require.NoError(t, err)
 
 	offsets, err := parseIndexData(indexData[:n])
@@ -279,14 +274,14 @@ func TestSegment_TruncateTail(t *testing.T) {
 		s := testSegment(t, initBase, dataLength)
 
 		offsets := append([]uint32{}, s.offsets...)
-		offsets = append(offsets, s.nextOffset)
+		offsets = append(offsets, uint32(s.nextOffset))
 
 		err := s.truncateTail(dIdx)
 		require.NoError(t, err)
 
 		diff := dIdx - initBase
 		require.Equal(t, offsets[:diff], s.offsets)
-		require.Equal(t, offsets[diff], s.nextOffset)
+		require.Equal(t, offsets[diff], uint32(s.nextOffset))
 		require.Equal(t, dIdx, s.nextIndex())
 	}
 
@@ -354,8 +349,8 @@ func testSegment(t *testing.T, baseIndex, sampleData uint64) *segment {
 
 func TestPadding(t *testing.T) {
 	cases := []struct {
-		input   uint32
-		padding uint32
+		input   int
+		padding int
 	}{
 		{1, 7},
 		{8, 0},
