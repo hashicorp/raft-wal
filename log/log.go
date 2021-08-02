@@ -22,7 +22,7 @@ const (
 	LogCompressionGZip
 )
 
-type SegmentFile struct {
+type SegmentInfo struct {
 	Path     string
 	LogCount int
 }
@@ -39,7 +39,7 @@ type Log interface {
 
 	Close() error
 
-	GetSealedLogPath(index uint64) (*SegmentFile, error)
+	GetSealedLogPath(index uint64) (*SegmentInfo, error)
 }
 
 type UserLogConfig struct {
@@ -193,6 +193,9 @@ func (l *log) segmentFor(index uint64) (*segment, error) {
 	return l.segmentForUnsafe(index)
 }
 
+// segmentForUnsafe is a version of segmentFor that doesn't check to ensure if
+// the index is newer than lastIndex, e.g. because we're just starting up and
+// don't know the lastIndex yet.
 func (l *log) segmentForUnsafe(index uint64) (*segment, error) {
 	if index < l.firstIndex {
 		return nil, fmt.Errorf("index too small (%d < %d): %w", index, l.firstIndex, raft.ErrLogNotFound)
@@ -494,7 +497,7 @@ func (l *log) syncDir() error {
 	return fileutil.Fsync(l.dirFile)
 }
 
-func (l *log) GetSealedLogPath(index uint64) (*SegmentFile, error) {
+func (l *log) GetSealedLogPath(index uint64) (*SegmentInfo, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -507,7 +510,7 @@ func (l *log) GetSealedLogPath(index uint64) (*SegmentFile, error) {
 		return nil, err
 	}
 
-	return &SegmentFile{
+	return &SegmentInfo{
 		Path:     s.f.Name(),
 		LogCount: len(s.offsets),
 	}, nil

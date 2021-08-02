@@ -28,10 +28,10 @@ type FileWALLog interface {
 	raft.LogStore
 	Close() error
 	// GetSealedLogPath returns the sealed segment file that contains index
-	// or an error if none is found.  A nil SegmentFile with no error
+	// or an error if none is found.  A nil SegmentInfo with no error
 	// is returned if index is part of the active segment, i.e. the segment
 	// file is not yet sealed.
-	GetSealedLogPath(index uint64) (*log.SegmentFile, error)
+	GetSealedLogPath(index uint64) (*log.SegmentInfo, error)
 }
 
 var _ FileWALLog = (*wal)(nil)
@@ -176,6 +176,6 @@ func (w *wal) Close() error {
 	return w.log.Close()
 }
 
-func (w *wal) GetSealedLogPath(index uint64) (*log.SegmentFile, error) {
+func (w *wal) GetSealedLogPath(index uint64) (*log.SegmentInfo, error) {
 	return w.log.GetSealedLogPath(index)
 }
