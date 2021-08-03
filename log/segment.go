@@ -66,6 +66,7 @@ type segment struct {
 	nextOffset int
 
 	f  *os.File
+	fp string
 	bw *bufio.Writer
 
 	persistTransformers []transformer
@@ -83,7 +84,7 @@ func setSegmentHeader(b *[segment_header_size]byte, baseIndex uint64, config Log
 // parseSegmentHeader extracts the header constituents from b.
 func parseSegmentHeader(b [segment_header_size]byte) (baseIndex uint64, compression LogCompression, sealed bool, indexOffset int, indexRecSize int, err error) {
 	if !bytes.Equal(b[:len(segment_magic_bytes)], segment_magic_bytes) {
-		return 0, 0, false, 0, 0, errors.New("invalid file")
+		return 0, 0, false, 0, 0, errors.New("invalid file: bad magic")
 	}
 	if b[segmentHeaderStartOffsetVersion] != segmentVersion {
 		return 0, 0, false, 0, 0, errors.New("unsupported version")
@@ -118,7 +119,7 @@ func openExistingSegment(fp string, baseIndex uint64, forWrite bool, config LogC
 
 	f, err := os.OpenFile(fp, rdf, 0o600)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error opening existing segment file '%q': %w", fp, err)
 	}
 
 	var header [segment_header_size]byte
@@ -144,6 +145,7 @@ func openExistingSegment(fp string, baseIndex uint64, forWrite bool, config LogC
 		offsets:             make([]uint32, 0, 512),
 		nextOffset:          segmentDataInitOffset,
 		f:                   f,
+		fp:                  fp,
 		bw:                  bufio.NewWriterSize(f, 4096),
 		persistTransformers: persistTransformers(config.UserLogConfig),
 		loadTransformers:    loadTransformers(config.UserLogConfig),
@@ -172,6 +174,7 @@ func openExistingSegment(fp string, baseIndex uint64, forWrite bool, config LogC
 		}
 	}
 
+	config.Logger.Trace("openExistingSegment", "baseIndex", baseIndex, "fp", fp)
 	return s, nil
 }
 
@@ -204,6 +207,9 @@ func (s *segment) loadUnsealedContent() error {
 		nextOffset += recordSize(dataLength)
 		nextIndex++
 	}
+	if _, err := s.f.Seek(int64(nextOffset), io.SeekStart); err != nil {
+		return fmt.Errorf("error seeking to next offset: %w", err)
+	}
 
 	s.offsets = offsets
 	s.nextOffset = nextOffset
@@ -235,6 +241,7 @@ func createSegment(fp string, baseIndex uint64, config LogConfig) (*segment, err
 		return nil, err
 	}
 
+	config.Logger.Trace("createSegment", "baseIndex", baseIndex, "fp", fp)
 	return &segment{
 		baseIndex:           baseIndex,
 		openForWrite:        true,
@@ -242,6 +249,7 @@ func createSegment(fp string, baseIndex uint64, config LogConfig) (*segment, err
 		offsets:             make([]uint32, 0, 512),
 		nextOffset:          segmentDataInitOffset,
 		f:                   f,
+		fp:                  fp,
 		bw:                  bufio.NewWriterSize(f, 4096),
 		persistTransformers: persistTransformers(config.UserLogConfig),
 		loadTransformers:    loadTransformers(config.UserLogConfig),
@@ -329,7 +337,11 @@ func (s *segment) GetLog(index uint64, out []byte) (int, error) {
 	}
 
 	offset := s.offsets[li]
-	return s.readRecordAt(int(offset), rl, index, out)
+	n, err := s.readRecordAt(int(offset), rl, index, out)
+	if err != nil {
+		s.config.Logger.Trace("GetLog", "error", err, "s", s)
+	}
+	return n, err
 }
 
 func (s *segment) transform(data []byte) ([]byte, error) {
@@ -357,6 +369,7 @@ func putU64(dest []byte, offset int, value uint64) {
 // record, and enough padding bytes to 64-bit align the record.
 // Returns the number of bytes written or an error.
 func (s *segment) writeRecord(index uint64, data []byte) (int, error) {
+	s.config.Logger.Trace("writeRecord", "index", index, "fp", s.fp)
 
 	var rh [16]byte
 	var err error

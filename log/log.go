@@ -101,7 +101,7 @@ func NewLog(dir string, c LogConfig) (*log, error) {
 
 	bases, err := segmentsIn(dir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read segment directory: %v", err)
 	}
 
 	if c.SegmentChunkSize == 0 {
@@ -116,9 +116,8 @@ func NewLog(dir string, c LogConfig) (*log, error) {
 		bases = append(bases, 1)
 		active, err = openSegment(filepath.Join(dir, segmentName(1)), 1, true, c)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to open segment: %v", err)
 		}
-
 	}
 
 	l := &log{
@@ -137,23 +136,22 @@ func NewLog(dir string, c LogConfig) (*log, error) {
 	l.redoPendingTransaction()
 	l.syncDir()
 
-	s, err := l.segmentForUnsafe(bases[len(bases)-1])
+	base := bases[len(bases)-1]
+	s, err := l.segmentForUnsafe(base)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed getting segment for index %d: %v", base, err)
 	}
 	idx, err := s.lastIndexInFile()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get last index: %v", err)
 	}
 	l.lastIndex = idx
 
-	l.activeSegment = s
-
-	//if l.lastIndex > 0 && l.activeSegment == nil {
-	//	if err := l.startNewSegment(l.lastIndex+1); err != nil {
-	//		return nil, fmt.Errorf("failed to resume at index %d: %w", l.lastIndex+1, err)
-	//	}
-	//}
+	if l.lastIndex > 0 && l.activeSegment == nil {
+		if err := l.startNewSegment(l.lastIndex + 1); err != nil {
+			return nil, fmt.Errorf("failed to resume at index %d: %w", l.lastIndex+1, err)
+		}
+	}
 
 	return l, nil
 }
@@ -213,6 +211,7 @@ func (l *log) segmentForUnsafe(index uint64) (*segment, error) {
 	// TODO remove first clause. Probably instead we should create an activeSegment,
 	// e.g. for after a snapshot restore based on another node's logs.
 	if l.activeSegment != nil && index >= l.activeSegment.baseIndex {
+		l.config.Logger.Trace("segmentForUnsafe returning active segment", "s", l.activeSegment)
 		return l.activeSegment, nil
 	}
 
@@ -233,7 +232,7 @@ func (l *log) segmentForUnsafe(index uint64) (*segment, error) {
 		return nil, err
 	}
 
-	if l.cachedSegment != nil {
+	if l.cachedSegment != nil && l.cachedSegment != l.activeSegment {
 		l.cachedSegment.Close()
 	}
 	l.cachedSegment = seg
@@ -441,6 +440,8 @@ func (l *log) deleteOldLogFiles() error {
 
 	toDelete, toKeep := l.segmentBases[:delIdx], l.segmentBases[delIdx:]
 
+	l.config.Logger.Trace("deleteOldLogs", "toDelete", toDelete, "toKeep", toKeep)
+
 	for _, sb := range toDelete {
 		fp := filepath.Join(l.dir, segmentName(sb))
 		if err := os.Remove(fp); err != nil {
@@ -490,9 +491,7 @@ func (l *log) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if logger := l.config.Logger; logger != nil {
-		logger.Trace("closing raft-wal")
-	}
+	l.config.Logger.Trace("closing raft-wal")
 	var ret *multierror.Error
 	if err := l.lf.Close(); err != nil {
 		ret = multierror.Append(ret, err)
