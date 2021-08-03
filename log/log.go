@@ -9,6 +9,7 @@ import (
 
 	"github.com/coreos/etcd/pkg/fileutil"
 	"github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/raft"
 )
 
@@ -145,6 +146,14 @@ func NewLog(dir string, c LogConfig) (*log, error) {
 		return nil, err
 	}
 	l.lastIndex = idx
+
+	l.activeSegment = s
+
+	//if l.lastIndex > 0 && l.activeSegment == nil {
+	//	if err := l.startNewSegment(l.lastIndex+1); err != nil {
+	//		return nil, fmt.Errorf("failed to resume at index %d: %w", l.lastIndex+1, err)
+	//	}
+	//}
 
 	return l, nil
 }
@@ -481,12 +490,21 @@ func (l *log) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	err := l.activeSegment.Close()
-	berr := l.clearCachedSegment()
-	if err != nil {
-		return err
+	if logger := l.config.Logger; logger != nil {
+		logger.Trace("closing raft-wal")
 	}
-	return berr
+	var ret *multierror.Error
+	if err := l.lf.Close(); err != nil {
+		ret = multierror.Append(ret, err)
+	}
+	if err := l.activeSegment.Close(); err != nil {
+		ret = multierror.Append(ret, err)
+	}
+	if err := l.clearCachedSegment(); err != nil {
+		ret = multierror.Append(ret, err)
+	}
+	l.activeSegment = nil
+	return ret.ErrorOrNil()
 }
 
 func (l *log) syncDir() error {

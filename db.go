@@ -173,6 +173,7 @@ func (w *wal) DeleteRange(min, max uint64) error {
 }
 
 func (w *wal) Close() error {
+	w.config.Logger.Trace("Closing WAL")
 	return w.log.Close()
 }
 
