@@ -157,8 +157,7 @@ func openExistingSegment(fp string, baseIndex uint64, forWrite bool, config LogC
 		s.nextOffset = indexOffset
 
 		indexData := make([]byte, indexRecSize)
-		n, err := s.
-			readRecordAt(indexOffset, indexRecSize, indexSentinelIndex, indexData)
+		n, err := s.readRecordAt(indexOffset, indexRecSize, indexSentinelIndex, indexData)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse index data: %v", err)
 		}
