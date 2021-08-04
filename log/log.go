@@ -9,6 +9,7 @@ import (
 
 	"github.com/coreos/etcd/pkg/fileutil"
 	"github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/raft"
 )
 
@@ -100,7 +101,7 @@ func NewLog(dir string, c LogConfig) (*log, error) {
 
 	bases, err := segmentsIn(dir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read segment directory: %v", err)
 	}
 
 	if c.SegmentChunkSize == 0 {
@@ -115,9 +116,8 @@ func NewLog(dir string, c LogConfig) (*log, error) {
 		bases = append(bases, 1)
 		active, err = openSegment(filepath.Join(dir, segmentName(1)), 1, true, c)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to open segment: %v", err)
 		}
-
 	}
 
 	l := &log{
@@ -136,15 +136,22 @@ func NewLog(dir string, c LogConfig) (*log, error) {
 	l.redoPendingTransaction()
 	l.syncDir()
 
-	s, err := l.segmentForUnsafe(bases[len(bases)-1])
+	base := bases[len(bases)-1]
+	s, err := l.segmentForUnsafe(base)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed getting segment for index %d: %v", base, err)
 	}
 	idx, err := s.lastIndexInFile()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get last index: %v", err)
 	}
 	l.lastIndex = idx
+
+	if l.lastIndex > 0 && l.activeSegment == nil {
+		if err := l.startNewSegment(l.lastIndex + 1); err != nil {
+			return nil, fmt.Errorf("failed to resume at index %d: %w", l.lastIndex+1, err)
+		}
+	}
 
 	return l, nil
 }
@@ -201,8 +208,6 @@ func (l *log) segmentForUnsafe(index uint64) (*segment, error) {
 		return nil, fmt.Errorf("index too small (%d < %d): %w", index, l.firstIndex, raft.ErrLogNotFound)
 	}
 
-	// TODO remove first clause. Probably instead we should create an activeSegment,
-	// e.g. for after a snapshot restore based on another node's logs.
 	if l.activeSegment != nil && index >= l.activeSegment.baseIndex {
 		return l.activeSegment, nil
 	}
@@ -224,7 +229,7 @@ func (l *log) segmentForUnsafe(index uint64) (*segment, error) {
 		return nil, err
 	}
 
-	if l.cachedSegment != nil {
+	if l.cachedSegment != nil && l.cachedSegment != l.activeSegment {
 		l.cachedSegment.Close()
 	}
 	l.cachedSegment = seg
@@ -243,7 +248,7 @@ func (l *log) GetLog(index uint64) ([]byte, error) {
 	out := make([]byte, 1024*1024)
 	n, err := s.GetLog(index, out)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error reading record from segment file: %v", err)
 	}
 
 	return out[:n], nil
@@ -481,12 +486,18 @@ func (l *log) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	err := l.activeSegment.Close()
-	berr := l.clearCachedSegment()
-	if err != nil {
-		return err
+	var ret *multierror.Error
+	if err := l.lf.Close(); err != nil {
+		ret = multierror.Append(ret, err)
 	}
-	return berr
+	if err := l.activeSegment.Close(); err != nil {
+		ret = multierror.Append(ret, err)
+	}
+	if err := l.clearCachedSegment(); err != nil {
+		ret = multierror.Append(ret, err)
+	}
+	l.activeSegment = nil
+	return ret.ErrorOrNil()
 }
 
 func (l *log) syncDir() error {
