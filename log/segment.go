@@ -66,7 +66,6 @@ type segment struct {
 	nextOffset int
 
 	f  *os.File
-	fp string
 	bw *bufio.Writer
 
 	persistTransformers []transformer
@@ -145,7 +144,6 @@ func openExistingSegment(fp string, baseIndex uint64, forWrite bool, config LogC
 		offsets:             make([]uint32, 0, 512),
 		nextOffset:          segmentDataInitOffset,
 		f:                   f,
-		fp:                  fp,
 		bw:                  bufio.NewWriterSize(f, 4096),
 		persistTransformers: persistTransformers(config.UserLogConfig),
 		loadTransformers:    loadTransformers(config.UserLogConfig),
@@ -248,7 +246,6 @@ func createSegment(fp string, baseIndex uint64, config LogConfig) (*segment, err
 		offsets:             make([]uint32, 0, 512),
 		nextOffset:          segmentDataInitOffset,
 		f:                   f,
-		fp:                  fp,
 		bw:                  bufio.NewWriterSize(f, 4096),
 		persistTransformers: persistTransformers(config.UserLogConfig),
 		loadTransformers:    loadTransformers(config.UserLogConfig),
