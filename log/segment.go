@@ -159,7 +159,8 @@ func openExistingSegment(fp string, baseIndex uint64, forWrite bool, config LogC
 		s.nextOffset = indexOffset
 
 		indexData := make([]byte, indexRecSize)
-		n, err := s.readRecordAt(indexOffset, indexRecSize, indexSentinelIndex, indexData)
+		n, err := s.
+			readRecordAt(indexOffset, indexRecSize, indexSentinelIndex, indexData)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse index data: %v", err)
 		}
@@ -174,7 +175,6 @@ func openExistingSegment(fp string, baseIndex uint64, forWrite bool, config LogC
 		}
 	}
 
-	config.Logger.Trace("openExistingSegment", "baseIndex", baseIndex, "fp", fp)
 	return s, nil
 }
 
@@ -241,7 +241,6 @@ func createSegment(fp string, baseIndex uint64, config LogConfig) (*segment, err
 		return nil, err
 	}
 
-	config.Logger.Trace("createSegment", "baseIndex", baseIndex, "fp", fp)
 	return &segment{
 		baseIndex:           baseIndex,
 		openForWrite:        true,
@@ -275,7 +274,7 @@ func (s *segment) readRecordAt(offset, rl int, index uint64, out []byte) (int, e
 		var l [4]byte
 		_, err := s.f.ReadAt(l[:], int64(offset+recordHeaderStartOffsetLength))
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("error reading record length: %w", err)
 		}
 
 		lf := int(binary.BigEndian.Uint32(l[:]))
@@ -285,11 +284,11 @@ func (s *segment) readRecordAt(offset, rl int, index uint64, out []byte) (int, e
 	record := make([]byte, rl)
 	_, err := s.f.ReadAt(record, int64(offset))
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("error reading record: %w", err)
 	}
 	lIndex := getU64(record, recordHeaderStartOffsetIndex)
 	if lIndex != index {
-		return 0, fmt.Errorf("index mismatch %v != %v", lIndex, index)
+		return 0, fmt.Errorf("index in record %v does not match expected index %v", lIndex, index)
 	}
 
 	lChecksum := getU32(record, recordHeaderStartOffsetChecksum)
@@ -302,7 +301,7 @@ func (s *segment) readRecordAt(offset, rl int, index uint64, out []byte) (int, e
 
 	fChecksum := crc32.Checksum(record[recordHeaderSize:recordHeaderSize+lLength], crc32Table)
 	if lChecksum != fChecksum {
-		return 0, fmt.Errorf("checksums mismatch")
+		return 0, fmt.Errorf("record checksums mismatch")
 	}
 
 	data, err := s.untransform(record[recordHeaderSize : recordHeaderSize+lLength])
@@ -337,11 +336,7 @@ func (s *segment) GetLog(index uint64, out []byte) (int, error) {
 	}
 
 	offset := s.offsets[li]
-	n, err := s.readRecordAt(int(offset), rl, index, out)
-	if err != nil {
-		s.config.Logger.Trace("GetLog", "error", err, "s", s)
-	}
-	return n, err
+	return s.readRecordAt(int(offset), rl, index, out)
 }
 
 func (s *segment) transform(data []byte) ([]byte, error) {
@@ -369,8 +364,6 @@ func putU64(dest []byte, offset int, value uint64) {
 // record, and enough padding bytes to 64-bit align the record.
 // Returns the number of bytes written or an error.
 func (s *segment) writeRecord(index uint64, data []byte) (int, error) {
-	s.config.Logger.Trace("writeRecord", "index", index, "fp", s.fp)
-
 	var rh [16]byte
 	var err error
 

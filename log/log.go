@@ -208,10 +208,7 @@ func (l *log) segmentForUnsafe(index uint64) (*segment, error) {
 		return nil, fmt.Errorf("index too small (%d < %d): %w", index, l.firstIndex, raft.ErrLogNotFound)
 	}
 
-	// TODO remove first clause. Probably instead we should create an activeSegment,
-	// e.g. for after a snapshot restore based on another node's logs.
 	if l.activeSegment != nil && index >= l.activeSegment.baseIndex {
-		l.config.Logger.Trace("segmentForUnsafe returning active segment", "s", l.activeSegment)
 		return l.activeSegment, nil
 	}
 
@@ -251,7 +248,7 @@ func (l *log) GetLog(index uint64) ([]byte, error) {
 	out := make([]byte, 1024*1024)
 	n, err := s.GetLog(index, out)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error reading record from segment file: %v", err)
 	}
 
 	return out[:n], nil
@@ -440,8 +437,6 @@ func (l *log) deleteOldLogFiles() error {
 
 	toDelete, toKeep := l.segmentBases[:delIdx], l.segmentBases[delIdx:]
 
-	l.config.Logger.Trace("deleteOldLogs", "toDelete", toDelete, "toKeep", toKeep)
-
 	for _, sb := range toDelete {
 		fp := filepath.Join(l.dir, segmentName(sb))
 		if err := os.Remove(fp); err != nil {
@@ -491,7 +486,6 @@ func (l *log) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	l.config.Logger.Trace("closing raft-wal")
 	var ret *multierror.Error
 	if err := l.lf.Close(); err != nil {
 		ret = multierror.Append(ret, err)
