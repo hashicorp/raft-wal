@@ -41,6 +41,7 @@ type Log interface {
 	Close() error
 
 	GetSealedLogPath(index uint64) (*SegmentInfo, error)
+	GetSealedLogFiles(startIndex uint64) ([]*SegmentInfo, error)
 }
 
 type UserLogConfig struct {
@@ -506,6 +507,31 @@ func (l *log) syncDir() error {
 	}
 
 	return fileutil.Fsync(l.dirFile)
+}
+
+func (l *log) GetSealedLogFiles(startIndex uint64)([]*SegmentInfo, error){
+	if startIndex < l.firstIndex {
+		return nil, fmt.Errorf("start index %v is less than the first index %v", startIndex, l.firstIndex)
+	}
+	var segInfo []*SegmentInfo
+
+	segI, err := l.GetSealedLogPath(startIndex)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve sealed logs with error: %v", err)
+	}
+	segInfo = append(segInfo, segI)
+
+	segCount := uint64(segI.LogCount) + 1
+	for i := segCount; i <= l.lastIndex; i = segCount + 1 {
+		segI, err := l.GetSealedLogPath(i)
+		if err != nil {
+			// an error occurred, but we still have entries in the segInfo to return
+			break
+		}
+		segInfo = append(segInfo, segI)
+		segCount = uint64(segI.LogCount)
+	}
+	return segInfo, nil
 }
 
 func (l *log) GetSealedLogPath(index uint64) (*SegmentInfo, error) {

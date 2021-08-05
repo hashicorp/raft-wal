@@ -32,6 +32,8 @@ type FileWALLog interface {
 	// is returned if index is part of the active segment, i.e. the segment
 	// file is not yet sealed.
 	GetSealedLogPath(index uint64) (*log.SegmentInfo, error)
+	GetSealedLogFiles(startIndex uint64) ([]*log.SegmentInfo, error)
+	GetMetaIfNewerVersion(version uint64) (*MetaInfo, error)
 }
 
 var _ FileWALLog = (*wal)(nil)
@@ -178,4 +180,8 @@ func (w *wal) Close() error {
 
 func (w *wal) GetSealedLogPath(index uint64) (*log.SegmentInfo, error) {
 	return w.log.GetSealedLogPath(index)
+}
+
+func (w *wal) GetSealedLogFiles(startIndex uint64) ([]*log.SegmentInfo, error) {
+	return w.log.GetSealedLogFiles(startIndex)
 }
