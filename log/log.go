@@ -40,7 +40,6 @@ type Log interface {
 
 	Close() error
 
-	GetSealedLogPath(index uint64) (*SegmentInfo, error)
 	GetSealedLogFiles(startIndex uint64) ([]*SegmentInfo, error)
 }
 
@@ -510,31 +509,28 @@ func (l *log) syncDir() error {
 }
 
 func (l *log) GetSealedLogFiles(startIndex uint64)([]*SegmentInfo, error){
-	if startIndex < l.firstIndex {
-		return nil, fmt.Errorf("start index %v is less than the first index %v", startIndex, l.firstIndex)
-	}
+
 	var segInfo []*SegmentInfo
 
-	segI, err := l.GetSealedLogPath(startIndex)
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve sealed logs with error: %v", err)
-	}
-	segInfo = append(segInfo, segI)
-
-	segCount := uint64(segI.LogCount) + 1
-	for i := segCount; i <= l.lastIndex; i = segCount + 1 {
-		segI, err := l.GetSealedLogPath(i)
+	for _, baseIndex := range l.segmentBases {
+		if baseIndex < startIndex{
+			continue
+		}
+		s, err := l.getSealedLogPath(baseIndex)
 		if err != nil {
-			// an error occurred, but we still have entries in the segInfo to return
+			return nil, fmt.Errorf("failed to retrieve a segmet log: %v", err)
+		}
+		if s == nil {
+			// we just break since we have reached the active segment
 			break
 		}
-		segInfo = append(segInfo, segI)
-		segCount = uint64(segI.LogCount)
+		segInfo = append(segInfo, s)
 	}
+
 	return segInfo, nil
 }
 
-func (l *log) GetSealedLogPath(index uint64) (*SegmentInfo, error) {
+func (l *log) getSealedLogPath(index uint64) (*SegmentInfo, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 

@@ -27,11 +27,10 @@ func New(dir string) (*wal, error) {
 type FileWALLog interface {
 	raft.LogStore
 	Close() error
-	// GetSealedLogPath returns the sealed segment file that contains index
-	// or an error if none is found.  A nil SegmentInfo with no error
-	// is returned if index is part of the active segment, i.e. the segment
-	// file is not yet sealed.
-	GetSealedLogPath(index uint64) (*log.SegmentInfo, error)
+	// GetSealedLogFiles returns a slice of the sealed segment files
+	// starting form the given index or an error if none is found.
+	// A nil SegmentInfo slice with no error is returned if the starting index
+	// is part of the active segment, i.e. the segment file is not yet sealed.
 	GetSealedLogFiles(startIndex uint64) ([]*log.SegmentInfo, error)
 	GetMetaIfNewerVersion(version uint64) (*MetaInfo, error)
 }
@@ -176,10 +175,6 @@ func (w *wal) DeleteRange(min, max uint64) error {
 
 func (w *wal) Close() error {
 	return w.log.Close()
-}
-
-func (w *wal) GetSealedLogPath(index uint64) (*log.SegmentInfo, error) {
-	return w.log.GetSealedLogPath(index)
 }
 
 func (w *wal) GetSealedLogFiles(startIndex uint64) ([]*log.SegmentInfo, error) {

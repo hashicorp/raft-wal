@@ -262,6 +262,9 @@ func (w *wal) createMetaPage(path string) error {
 }
 
 func (w *wal) GetMetaIfNewerVersion(version uint64) (*MetaInfo, error){
+	if w.meta.Version == version {
+		return nil, nil
+	}
 	if version > w.meta.Version {
 		return nil, fmt.Errorf("requested version is higher than the stored one")
 	}
