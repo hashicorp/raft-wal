@@ -40,7 +40,7 @@ type Log interface {
 
 	Close() error
 
-	GetSealedLogPath(index uint64) (*SegmentInfo, error)
+	GetSealedLogFiles(startIndex uint64) ([]*SegmentInfo, error)
 }
 
 type UserLogConfig struct {
@@ -508,7 +508,29 @@ func (l *log) syncDir() error {
 	return fileutil.Fsync(l.dirFile)
 }
 
-func (l *log) GetSealedLogPath(index uint64) (*SegmentInfo, error) {
+func (l *log) GetSealedLogFiles(startIndex uint64)([]*SegmentInfo, error){
+
+	var segInfo []*SegmentInfo
+
+	for _, baseIndex := range l.segmentBases {
+		if baseIndex < startIndex{
+			continue
+		}
+		s, err := l.getSealedLogPath(baseIndex)
+		if err != nil {
+			return nil, fmt.Errorf("failed to retrieve a segment log: %v", err)
+		}
+		if s == nil {
+			// we just break since we have reached the active segment
+			break
+		}
+		segInfo = append(segInfo, s)
+	}
+
+	return segInfo, nil
+}
+
+func (l *log) getSealedLogPath(index uint64) (*SegmentInfo, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 

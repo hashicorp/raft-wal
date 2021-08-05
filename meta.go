@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"os"
+	"path/filepath"
 
 	"github.com/coreos/etcd/pkg/fileutil"
 	"github.com/hashicorp/go-msgpack/codec"
@@ -19,6 +20,11 @@ const (
 var (
 	meta_magic_header = []byte("__RAFT_WAL_META_v0__")
 )
+
+type MetaInfo struct {
+	Path string
+	Version uint64
+}
 
 type meta struct {
 	Version uint64
@@ -253,4 +259,19 @@ func (w *wal) createMetaPage(path string) error {
 
 	return nil
 
+}
+
+func (w *wal) GetMetaIfNewerVersion(version uint64) (*MetaInfo, error){
+	if w.meta.Version == version {
+		return nil, nil
+	}
+	if version > w.meta.Version {
+		return nil, fmt.Errorf("requested version is higher than the stored one")
+	}
+
+	metaInfo := &MetaInfo{
+		Path: filepath.Join(w.dir, "meta"),
+		Version: w.meta.Version,
+	}
+	return metaInfo, nil
 }
