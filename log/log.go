@@ -518,7 +518,7 @@ func (l *log) GetSealedLogFiles(startIndex uint64)([]*SegmentInfo, error){
 		}
 		s, err := l.getSealedLogPath(baseIndex)
 		if err != nil {
-			return nil, fmt.Errorf("failed to retrieve a segmet log: %v", err)
+			return nil, fmt.Errorf("failed to retrieve a segment log: %v", err)
 		}
 		if s == nil {
 			// we just break since we have reached the active segment
