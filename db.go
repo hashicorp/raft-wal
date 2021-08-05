@@ -28,7 +28,7 @@ type FileWALLog interface {
 	raft.LogStore
 	Close() error
 	// GetSealedLogFiles returns a slice of the sealed segment files
-	// starting form the given index or an error if none is found.
+	// starting from the given index or an error if none is found.
 	// A nil SegmentInfo slice with no error is returned if the starting index
 	// is part of the active segment, i.e. the segment file is not yet sealed.
 	GetSealedLogFiles(startIndex uint64) ([]*log.SegmentInfo, error)
