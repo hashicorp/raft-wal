@@ -41,6 +41,7 @@ type Log interface {
 	Close() error
 
 	GetSealedLogFiles(startIndex uint64) ([]*SegmentInfo, error)
+	StartNewSegmentOnSealTimeout() error
 }
 
 type UserLogConfig struct {
@@ -296,6 +297,23 @@ func (l *log) maybeStartNewSegment() error {
 	}
 	s.Close()
 
+	return l.startNewSegment(s.nextIndex())
+}
+
+func (l *log) StartNewSegmentOnSealTimeout() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	s:= l.activeSegment
+	if s.nextIndex() == s.baseIndex{
+		// Empty segments don't need to get sealed
+		return nil
+	}
+	err := s.Seal()
+	if err != nil {
+		return err
+	}
+	s.Close()
 	return l.startNewSegment(s.nextIndex())
 }
 

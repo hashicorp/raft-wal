@@ -1,12 +1,14 @@
 package raftwal
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"hash/crc32"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/go-msgpack/codec"
 	"github.com/hashicorp/raft"
@@ -33,6 +35,7 @@ type FileWALLog interface {
 	// is part of the active segment, i.e. the segment file is not yet sealed.
 	GetSealedLogFiles(startIndex uint64) ([]*log.SegmentInfo, error)
 	GetMetaIfNewerVersion(version uint64) (*MetaInfo, error)
+	SetContext(ctx context.Context)
 }
 
 var _ FileWALLog = (*wal)(nil)
@@ -50,6 +53,8 @@ type wal struct {
 	log    log.Log
 	dir    string
 	config LogConfig
+	ctx context.Context
+	kickOffSealerOnTimeout bool
 }
 
 func NewWAL(dir string, c LogConfig) (*wal, error) {
@@ -155,6 +160,26 @@ func (w *wal) StoreLogs(logs []*raft.Log) error {
 		return err
 	}
 
+	// On storing the first logs, let's kick off
+	// a go routine that seals logs after a max-age
+	if !w.kickOffSealerOnTimeout && w.ctx != nil{
+		w.kickOffSealerOnTimeout = true
+		go func() {
+			ticker := time.NewTicker(time.Minute / 60)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-w.ctx.Done():
+					return
+				case <-ticker.C:
+					// seal active segment
+					w.log.StartNewSegmentOnSealTimeout()
+				}
+			}
+		}()
+	}
+
 	return berr
 }
 
@@ -179,4 +204,8 @@ func (w *wal) Close() error {
 
 func (w *wal) GetSealedLogFiles(startIndex uint64) ([]*log.SegmentInfo, error) {
 	return w.log.GetSealedLogFiles(startIndex)
+}
+
+func (w *wal) SetContext(ctx context.Context) {
+	w.ctx = ctx
 }
