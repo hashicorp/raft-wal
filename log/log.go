@@ -78,6 +78,7 @@ type log struct {
 	// lastIndex is the last log index known; the next StoreLogs call
 	// must be for an index of lastIndex+1.
 	lastIndex uint64
+	autoSealedIndex uint64
 
 	segmentBases  []uint64
 	activeSegment *segment
@@ -305,15 +306,25 @@ func (l *log) StartNewSegmentOnSealTimeout() error {
 	defer l.mu.Unlock()
 
 	s:= l.activeSegment
-	if s.nextIndex() == s.baseIndex{
-		// Empty segments don't need to get sealed
+	// Empty segments don't need to seal a segment
+	if s.nextIndex()-s.baseIndex < l.config.SegmentChunkSize {
 		return nil
+	}
+	// autoSealing segments should be done only when there is
+	// no log index added to a segment within a timeout period.
+	// If an activity was detected, let's just return
+	if l.autoSealedIndex < l.lastIndex {
+		return nil
+	}
+	if l.autoSealedIndex > l.lastIndex {
+		return fmt.Errorf("autoSealedIndex is greater than lastIndex known")
 	}
 	err := s.Seal()
 	if err != nil {
 		return err
 	}
 	s.Close()
+	l.autoSealedIndex = s.nextIndex()
 	return l.startNewSegment(s.nextIndex())
 }
 
