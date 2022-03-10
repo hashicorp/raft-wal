@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/coreos/etcd/pkg/fileutil"
@@ -216,8 +217,11 @@ func (s *segment) loadUnsealedContent() error {
 // createSegment creates a segment backed by a file at path fp, overwriting any
 // file that might already be there.  The segment header is written and the
 // returned segment is positioned ready to receive new logs.
-func createSegment(fp string, baseIndex uint64, config LogConfig) (*segment, error) {
-	f, err := os.OpenFile(fp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
+// This is done by creating a temporary file, writing the header to it and
+// finally renaming it to the correct location. 
+func createSegment(path string, baseIndex uint64, config LogConfig) (*segment, error) {
+	tempPath := path + ".tmp"
+	f, err := os.OpenFile(tempPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return nil, err
 	}
@@ -229,12 +233,43 @@ func createSegment(fp string, baseIndex uint64, config LogConfig) (*segment, err
 	var header [segment_header_size]byte
 	setSegmentHeader(&header, baseIndex, config)
 	if _, err := f.Write(header[:]); err != nil {
-		_ = os.Remove(fp)
+		_ = os.Remove(path)
+		return nil, err
+	}
+
+	// it is important to fsync here to make sure the temp file contains the
+	// correct header before we rename.
+	if err := fileutil.Fdatasync(f); err != nil {
+		return nil, err
+	}
+
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
+
+	if err := os.Rename(tempPath, path); err != nil {
+		return nil, err
+	}
+
+	dir, err := os.OpenFile(filepath.Dir(path), os.O_RDONLY, 0600)
+	if err != nil {
+		return nil, err
+	}
+	defer dir.Close()
+
+	// it is important to fsync the parent directory to make sure the rename is
+	// flushed to disk.
+	if err := fileutil.Fdatasync(dir); err != nil {
+		return nil, err
+	}
+
+	f, err = os.OpenFile(path, os.O_RDWR, 0600)
+	if err != nil {
 		return nil, err
 	}
 
 	if _, err := f.Seek(segmentDataInitOffset, io.SeekStart); err != nil {
-		_ = os.Remove(fp)
+		_ = os.Remove(path)
 		return nil, err
 	}
 
