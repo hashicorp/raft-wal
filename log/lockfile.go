@@ -40,7 +40,7 @@ func newLockFile(p string, noSync bool) (*lockFile, error) {
 		return nil, err
 	}
 
-	lf, err := fileutil.TryLockFile(p, 0, 0600)
+	lf, err := fileutil.TryLockFile(p, os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
 	}
