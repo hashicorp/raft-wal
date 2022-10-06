@@ -82,19 +82,21 @@ objects described by the following struct. JSON encoding is used as this is not
 performance sensitive and it's simpler to work with and more human readable.
 
 ```go
-type SegmentInfo struct {
-  ID        uint64
-  BaseIndex uint64
-  MinIndex  uint64
-  MaxIndex  uint64
-  BlockSize uint32
-  NumBlocks uint32
-  Sealed    bool
+type segmentInfo struct {
+  ID         uint64
+  BaseIndex  uint64
+  MinIndex   uint64
+  MaxIndex   uint64
+  Codec      uint64
+  BlockSize  uint32
+  NumBlocks  uint32
+  CreateTime time.Time
+  SealTime   time.Time
 }
 ```
 
 The last segment (with highest key) is the "tail" and must be the only one where
-`Sealed = false`.
+`SealTime = 0`.
 
 BoltDB's major performance issue currently is when large amounts of logs are
 written and then truncated, the overhead of tracking all the freespace in the
