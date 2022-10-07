@@ -96,7 +96,7 @@ func (s meta) getLog(index uint64) ([]byte, error) {
 // called after already checking with the tail writer whether the log is in
 // there which means the caller can be sure it's not going to return the tail
 // segment.
-func (s meta) findSegmentReader(idx uint64) (*segmentReader, error) {
+func (s meta) findSegmentReader(idx uint64) (segmentLogGetter, error) {
 
 	// Search for a segment with baseIndex.
 	it := s.segments.Iterator()

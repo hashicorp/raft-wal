@@ -91,6 +91,12 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 			return nil, err
 		}
 
+		// Verify we can decode the entries.
+		// TODO: support multiple decoders to allow rotating codec.
+		if si.Codec != w.codec.ID() {
+			return nil, fmt.Errorf("segment file %s: uses an unknown codec", si.fileName())
+		}
+
 		// Create segmentReader and validate
 		sr := w.readerFn()
 		if err := sr.validate(f, si); err != nil {
@@ -120,6 +126,14 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 			// somehow which is not supported - they could just tamper it right and
 			// also unset the seal time if they want to do that!
 			return nil, fmt.Errorf("invalid WAL state: tail segment is already sealed")
+		}
+
+		// Verify we can encode/decode entries the same way. TODO: support multiple
+		// decoders to allow rotating codec. That means this will have to support
+		// recovering a file with an older codec before switching to the new one for
+		// later segments or something.
+		if tailSI.Codec != w.codec.ID() {
+			return nil, fmt.Errorf("segment file %s: uses an unknown codec", tailSI.fileName())
 		}
 
 		// Recover the partial tail from the reader.
