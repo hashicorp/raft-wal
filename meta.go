@@ -96,23 +96,30 @@ func (s meta) getLog(index uint64) ([]byte, error) {
 // called after already checking with the tail writer whether the log is in
 // there which means the caller can be sure it's not going to return the tail
 // segment.
-func (s meta) findSegmentReader(idx uint64) (segmentLogGetter, error) {
+func (s meta) findSegmentReader(idx uint64) (segmentReader, error) {
+
+	if s.segments.Len() == 0 {
+		return nil, ErrNotFound
+	}
 
 	// Search for a segment with baseIndex.
 	it := s.segments.Iterator()
 
-	// The are baseIndex we want the first one lower or equal. Seek gets us to the
-	// first result equal or greater so we are either at it (if equal) or on the
-	// one _after_ the one we need. We step back since that's most likely
+	// The baseIndex we want is the first one lower or equal to idx. Seek gets us
+	// to the first result equal or greater so we are either at it (if equal) or
+	// on the one _after_ the one we need. We step back since that's most likely
 	it.Seek(idx)
+	// The first call to Next/Prev actually returns the node the iterator is
+	// currently on (which is probably the one after the one we want) but in some
+	// edge cases we might actually want this one. Rather than reversing back and
+	// coming forward again, just check both this and the one before it.
 	_, seg, ok := it.Prev()
-	// It's probably this one, but might be the next. Shouldn't be more than two.
-	if ok && seg.MaxIndex < idx {
-		// We need next segment which must base baseIndex == idx
-		_, seg, ok = it.Next()
+	if ok && seg.BaseIndex > idx {
+		_, seg, ok = it.Prev()
 	}
 
-	if ok && seg.MinIndex < idx && seg.MaxIndex > idx {
+	// We either have the right segment or it doesn't exist.
+	if ok && seg.MinIndex <= idx && (seg.MaxIndex == 0 || seg.MaxIndex >= idx) {
 		return seg.r, nil
 	}
 
@@ -143,5 +150,15 @@ func (s meta) firstIndex() uint64 {
 }
 
 func (s meta) lastIndex() uint64 {
-	return s.tail.lastIndex()
+	tailIdx := s.tail.lastIndex()
+	if tailIdx > 0 {
+		return tailIdx
+	}
+	// Current tail is empty, so the largest log is the MaxIndex of the previous
+	// segment which must be the same as the tail's BaseIndex - 1 or zero.
+	tailSeg := s.getTailInfo()
+	if tailSeg == nil || tailSeg.BaseIndex == 0 {
+		return 0
+	}
+	return tailSeg.BaseIndex - 1
 }

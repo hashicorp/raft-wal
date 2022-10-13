@@ -46,8 +46,7 @@ type Codec interface {
 //
 // For now we assume raft.Log is not likely to change too much. If it does we'll
 // use a new Codec ID for the later version and have to support decoding either.
-type BinaryCodec struct {
-}
+type BinaryCodec struct{}
 
 // ID returns the globally unique identifier for this codec version. This is
 // encoded into segment file headers and must remain consistent over the life

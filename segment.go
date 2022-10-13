@@ -12,6 +12,8 @@ import (
 
 const (
 	segmentFileSuffix = ".wal"
+	defaultBlockSize  = 1024 * 1024 // 1 MiB
+	defaultNumBlocks  = 64          // 64 MiB segments
 )
 
 type SegmentInfo struct {
@@ -59,7 +61,7 @@ type SegmentInfo struct {
 
 	// r is the logGetter for our in-memory state it's private so it won't be
 	// serialized or visible to external callers like MetaStore implementations.
-	r segmentLogGetter
+	r segmentReader
 }
 
 func (i *SegmentInfo) fileName() string {
@@ -76,6 +78,43 @@ type logEntry struct {
 	Data  []byte
 }
 
+// segmentFiler is the interface that provides access to segments to the WAL. It
+// encapsulated creating, and recovering segments and returning reader or writer
+// interfaces to interact with them. It's main purpose is to abstract the core
+// WAL logic both from the actual encoding layer of segment files. You can think
+// of it as a layer of abstraction above the VFS which abstracts actual file
+// system operations on files but knows nothing about the format. In tests for
+// example we can implement a segmentFiler that is way simpler than the real
+// encoding/decoding layer on top of a VFS - even an in-memory VFS which makes
+// tests much simpler to write and run.
+type segmentFiler interface {
+	// Create adds a new segment with the given info and returns a writer or an
+	// error.
+	Create(info SegmentInfo) (segmentWriter, error)
+
+	// RecoverTail is called on an unsealed segment when re-opening the WAL it
+	// will attempt to recover from a possible crash. It will either return an
+	// error, or return a valid segmentWriter that is ready for further appends.
+	RecoverTail(info SegmentInfo) (segmentWriter, error)
+
+	// Open an already sealed segment for reading. Open may validate the file's
+	// header and return an error if it doesn't match the expected info.
+	Open(info SegmentInfo) (segmentReader, error)
+
+	// List returns the set of segment IDs currently stored. It's used by the WAL
+	// on recovery to find any segment files that need to be deleted following a
+	// unclean shutdown. The returned map is a map of ID -> BaseIndex. BaseIndex
+	// is returned to allow subsequent Delete calls to be made.
+	List() (map[uint64]uint64, error)
+
+	// Delete removes the segment with given baseIndex and id if it exists. Note
+	// that baseIndex is technically redundant since ID is unique on it's own. But
+	// in practice we name files (or keys) with both so that they sort correctly.
+	// This interface allows a  simpler implementation where we can just delete
+	// the file if it exists without having to scan the underlying storage for a.
+	Delete(baseIndex, ID uint64) error
+}
+
 // segmentWriter manages appending logs to the tail segment of the WAL. It's an
 // interface to make testing core WAL simpler. Every segmentWriter will have
 // either `init` or `recover` called once before any other methods. When either
@@ -83,16 +122,7 @@ type logEntry struct {
 // reads.
 type segmentWriter interface {
 	io.Closer
-	segmentLogGetter
-
-	// init writes the initial file header and prepares it for writing new logs.
-	init(f WritableFile, info SegmentInfo) error
-
-	// recover is called when the WAL is opened and a file that was not yet sealed
-	// exists on disk. It must decide whether the data in the log is valid and
-	// recoverable and setup all internal writer state ready to append new
-	// entries.
-	recover(f WritableFile, info SegmentInfo) error
+	segmentReader
 
 	// append adds one or more entries. It must not return until the entries are
 	// durably stored otherwise raft's guarantees will be compromised.
@@ -107,16 +137,8 @@ type segmentWriter interface {
 	// lastIndex returns the most recently persisted index in the log. It must
 	// respond without blocking on append since it's needed frequently by read
 	// paths that may call it concurrently. Typically this will be loaded from an
-	// atomic int.
+	// atomic int. If the segment is empty lastIndex should return zero.
 	lastIndex() uint64
-}
-
-// segmentLogGetter is a common interface that both readable and writable files
-// need to be able to fetch logs.
-type segmentLogGetter interface {
-	// getLog returns the raw log entry bytes associated with idx. If the log
-	// doesn't exist in this segment ErrNotFound must be returned.
-	getLog(idx uint64) ([]byte, error)
 }
 
 // segmentReader wraps a ReadableFile to allow lookup of logs in an existing
@@ -125,11 +147,10 @@ type segmentLogGetter interface {
 // subsequent reads.
 type segmentReader interface {
 	io.Closer
-	segmentLogGetter
 
-	// validate checks the ReaderAt contains a valid segment file header. If it
-	// returns nil, it must be ready for getLog calls - possibly concurrently.
-	validate(r ReadableFile, info SegmentInfo) error
+	// getLog returns the raw log entry bytes associated with idx. If the log
+	// doesn't exist in this segment ErrNotFound must be returned.
+	getLog(idx uint64) ([]byte, error)
 }
 
 // findOldSegments finds the file names in files that are no longer part of the
