@@ -6,7 +6,6 @@ package wal
 import (
 	"fmt"
 	"io"
-	"strings"
 	"time"
 )
 
@@ -151,37 +150,4 @@ type segmentReader interface {
 	// getLog returns the raw log entry bytes associated with idx. If the log
 	// doesn't exist in this segment ErrNotFound must be returned.
 	getLog(idx uint64) ([]byte, error)
-}
-
-// findOldSegments finds the file names in files that are no longer part of the
-// WAL meta in m and need to be deleted.
-func findOldSegments(m meta, files []string) []string {
-	toDelete := make([]string, 0, 1)
-
-	it := m.segments.Iterator()
-	segIDs := make(map[uint64]struct{})
-	for !it.Done() {
-		_, seg, _ := it.Next()
-		segIDs[seg.ID] = struct{}{}
-	}
-
-	for _, fname := range files {
-		if !strings.HasSuffix(fname, segmentFileSuffix) {
-			continue
-		}
-
-		var fBase, fID uint64
-		n, err := fmt.Sscanf(fname, "%020d-%016x"+segmentFileSuffix, &fBase, &fID)
-		if err != nil || n != 2 {
-			// misnamed file. skip it even though it has our WAL suffix just to be
-			// cautious.
-			continue
-		}
-
-		if _, ok := segIDs[fID]; !ok {
-			// File's ID is no longer in the segment list. Delete it!
-			toDelete = append(toDelete, fname)
-		}
-	}
-	return toDelete
 }

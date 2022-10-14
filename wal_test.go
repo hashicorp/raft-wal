@@ -237,7 +237,7 @@ func TestWALOpen(t *testing.T) {
 
 			err = w.GetLog(last+1, &log2)
 			require.NoError(t, err)
-			require.Equal(t, last, log2.Index)
+			require.Equal(t, last+1, log2.Index)
 			require.Equal(t, "appended", string(log2.Data))
 		})
 	}

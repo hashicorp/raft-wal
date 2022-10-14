@@ -39,7 +39,7 @@ type WAL struct {
 	// can be accessed without a lock when reading. We only support a single
 	// writer so all methods that mutate either the WAL state or append to the
 	// tail of the log must hold the writeMu until they complete all changes.
-	s atomic.Value[meta]
+	s atomic.Value[*state]
 
 	// writeMu must be held when modifying s or while appending to the tail.
 	// Although we take care never to let readers block writer, we still only
@@ -73,7 +73,7 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 		return nil, err
 	}
 
-	newState := meta{
+	newState := state{
 		segments:      &immutable.SortedMap[uint64, SegmentInfo]{},
 		nextSegmentID: persisted.NextSegmentID,
 	}
@@ -166,13 +166,54 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 	}
 
 	// Store the in-memory state (it was already persisted if we modified it
-	// above)
-	w.s.Store(newState)
+	// above) there are no readers yet since we are constructing a new WAL so we
+	// don't need to jump through the mutateState hoops yet!
+	w.s.Store(&newState)
 
 	// Delete any unused segment files left over after a crash.
 	w.deleteSegments(toDelete)
 
 	return w, nil
+}
+
+// stateTxn represents a transaction body that mutates the state under the
+// writeLock. s is already a shallow copy of the current state that may be
+// mutated as needed. If a nil error is returned, s will be atomically set as
+// the new state. If a non-nil finalizer func is returned it will be atomically
+// attached to the old state after it's been replaced but before the write lock
+// is released. The finalizer will be called exactly once when all current
+// readers have released the old state.
+type stateTxn func(s *state) (func(), error)
+
+// mutateState executes a stateTxn. writeLock MUST be held while calling this.
+func (w *WAL) mutateStateLocked(tx stateTxn) error {
+	s := w.s.Load()
+	s.acquire()
+	defer s.release()
+
+	newS := s.clone()
+	fn, err := tx(&newS)
+	if err != nil {
+		return err
+	}
+
+	// Commit updates to meta
+	if err := w.metaDB.CommitState(newS.Persistent()); err != nil {
+		return err
+	}
+
+	w.s.Store(&newS)
+	s.finalizer.Store(fn)
+	return nil
+}
+
+// acquireState should be used by all readers to fetch the current state. The
+// returned release func must be called when no further accesses to state or the
+// data within it will be performed to free old files that may have been
+// truncated concurrently.
+func (w *WAL) acquireState() (*state, func()) {
+	s := w.s.Load()
+	return s, s.acquire()
 }
 
 func (w *WAL) applyDefaultsAndValidate() error {
@@ -211,18 +252,24 @@ func (w *WAL) newSegment(ID, baseIndex uint64) SegmentInfo {
 
 // FirstIndex returns the first index written. 0 for no entries.
 func (w *WAL) FirstIndex() (uint64, error) {
-	return w.s.Load().firstIndex(), nil
+	s, release := w.acquireState()
+	defer release()
+	return s.firstIndex(), nil
 }
 
 // LastIndex returns the last index written. 0 for no entries.
 func (w *WAL) LastIndex() (uint64, error) {
-	return w.s.Load().lastIndex(), nil
+	s, release := w.acquireState()
+	defer release()
+	return s.lastIndex(), nil
 }
 
 // GetLog gets a log entry at a given index.
 func (w *WAL) GetLog(index uint64, log *raft.Log) error {
+	s, release := w.acquireState()
+	defer release()
 
-	raw, err := w.s.Load().getLog(index)
+	raw, err := s.getLog(index)
 	if err != nil {
 		return err
 	}
@@ -245,7 +292,8 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 	w.writeMu.Lock()
 	defer w.writeMu.Unlock()
 
-	s := w.s.Load()
+	s, release := w.acquireState()
+	defer release()
 
 	// Verify monotonicity since we assume it
 	lastIdx := s.lastIndex()
@@ -259,21 +307,23 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 	// be not to allocate the segment file at all until now but that would be even
 	// more expensive!
 	if lastIdx == 0 && logs[0].Index > 0 {
-		newState := w.s.Load()
-		seg0, ok := newState.segments.Get(0)
-		if !ok {
-			// Can't happen!
-			return fmt.Errorf("invalid internal state! %w", ErrCorrupt)
+
+		txn := func(s *state) (func(), error) {
+			seg0, ok := s.segments.Get(0)
+			if !ok {
+				// Can't happen!
+				return nil, fmt.Errorf("invalid internal state! %w", ErrCorrupt)
+			}
+			// Note that we're mutating a copy of SegmentInfo since it's stored by value
+			// not reference.
+			seg0.MinIndex = logs[0].Index
+			s.segments = s.segments.Set(0, seg0)
+			return nil, nil
 		}
-		// Note that we're mutating a copy of SegmentInfo since it's stored by value
-		// not reference.
-		seg0.MinIndex = logs[0].Index
-		newState.segments = newState.segments.Set(0, seg0)
-		// Commit new state to disk first
-		if err := w.metaDB.CommitState(newState.Persistent()); err != nil {
+
+		if err := w.mutateStateLocked(txn); err != nil {
 			return err
 		}
-		w.s.Store(newState)
 		// Now we can append!
 	}
 
@@ -318,7 +368,8 @@ func (w *WAL) DeleteRange(min uint64, max uint64) error {
 	w.writeMu.Lock()
 	defer w.writeMu.Unlock()
 
-	s := w.s.Load()
+	s, release := w.acquireState()
+	defer release()
 
 	// Work out what type of truncation this is.
 	first, last := s.firstIndex(), s.lastIndex()
@@ -400,36 +451,28 @@ func (w *WAL) GetUint64(key []byte) (uint64, error) {
 }
 
 func (w *WAL) rotateSegmentLocked() error {
-	s := w.s.Load()
+	txn := func(newState *state) (func(), error) {
+		// Mark current tail as sealed in segments
+		tail := newState.getTailInfo()
+		if tail == nil {
+			// Can't happen
+			return nil, fmt.Errorf("no tail found during rotate")
+		}
 
-	// Mark current tail as sealed in segments
-	tail := s.getTailInfo()
-	if tail == nil {
-		// Can't happen
-		return fmt.Errorf("no tail found during rotate")
+		// Note that tail is a copy since it's a value type. Even though this is a
+		// pointer here it's pointing to a copy on the heap that was made in
+		// getTailInfo above, so we can mutate it safely and update the immutable
+		// state with our version.
+		tail.SealTime = time.Now()
+		tail.MaxIndex = newState.tail.lastIndex()
+
+		// Update the old tail with the seal time etc.
+		newState.segments = newState.segments.Set(tail.BaseIndex, *tail)
+
+		return nil, w.createNextSegment(newState)
 	}
 
-	// Note that tail is a copy since it's a value type. Even though this is a
-	// pointer here it's pointing to a copy on the heap that was made in
-	// getTailInfo above, so we can mutate it safely and update the immutable
-	// state with our version.
-	tail.SealTime = time.Now()
-	tail.MaxIndex = s.tail.lastIndex()
-
-	// This is a shallow copy but we'll update segments on mutations anyway since
-	// it's immutable.
-	newState := s
-
-	// Update the old tail with the seal time etc.
-	newState.segments = newState.segments.Set(tail.BaseIndex, *tail)
-
-	if err := w.createNextSegment(&newState); err != nil {
-		return err
-	}
-
-	// Finally we are all done. Update in-memory state
-	w.s.Store(newState)
-	return nil
+	return w.mutateStateLocked(txn)
 }
 
 // createNextSegment is passes a mutable copy of the new state ready to have a
@@ -438,7 +481,7 @@ func (w *WAL) rotateSegmentLocked() error {
 // segments that should be in the log, all must be sealed at this point. The new
 // segment's baseIndex will be the current last-segment's MaxIndex (or 0 if
 // non).
-func (w *WAL) createNextSegment(newState *meta) error {
+func (w *WAL) createNextSegment(newState *state) error {
 	// Find existing sealed tail
 	tail := newState.getTailInfo()
 
@@ -479,127 +522,109 @@ func (w *WAL) createNextSegment(newState *meta) error {
 }
 
 func (w *WAL) truncateHeadLocked(newMin uint64) error {
-	s := w.s.Load()
+	txn := stateTxn(func(newState *state) (func(), error) {
+		// Iterate the segments to find any that are entirely deleted.
+		toDelete := make(map[uint64]uint64)
+		toClose := make([]io.Closer, 0, 1)
+		it := newState.segments.Iterator()
+		var head *SegmentInfo
+		for !it.Done() {
+			_, seg, _ := it.Next()
 
-	// Shallow copy to update
-	newState := s
-
-	// Iterate the segments to find any that are entirely deleted.
-	toDelete := make(map[uint64]uint64)
-	toClose := make([]io.Closer, 0, 1)
-	it := newState.segments.Iterator()
-	var head *SegmentInfo
-	for !it.Done() {
-		_, seg, _ := it.Next()
-
-		// If the segment is the tail (unsealed) or a sealed segment that contains
-		// this new min then we've found the new head.
-		if seg.SealTime.IsZero() {
-			// This is the tail, check if it actually has any content to keep
-			if newState.lastIndex() >= newMin {
+			// If the segment is the tail (unsealed) or a sealed segment that contains
+			// this new min then we've found the new head.
+			if seg.SealTime.IsZero() {
+				// This is the tail, check if it actually has any content to keep
+				if newState.lastIndex() >= newMin {
+					head = &seg
+					break
+				}
+			} else if seg.MaxIndex >= newMin {
 				head = &seg
 				break
 			}
-		} else if seg.MaxIndex >= newMin {
-			head = &seg
-			break
+
+			toDelete[seg.ID] = seg.BaseIndex
+			toClose = append(toClose, seg.r)
+			newState.segments = newState.segments.Delete(seg.BaseIndex)
 		}
 
-		toDelete[seg.ID] = seg.BaseIndex
-		toClose = append(toClose, seg.r)
-		newState.segments = newState.segments.Delete(seg.BaseIndex)
-	}
-
-	// There may not be any segments (left) but if there are, update the new
-	// head's MinIndex.
-	if head != nil {
-		head.MinIndex = newMin
-		newState.segments = newState.segments.Set(head.BaseIndex, *head)
-	} else {
-		// If there is no head any more, then there is no tail either! We should
-		// create a new blank one ready for use when we next append like we do
-		// during initialization.
-		if err := w.createNextSegment(&newState); err != nil {
-			return err
+		// There may not be any segments (left) but if there are, update the new
+		// head's MinIndex.
+		if head != nil {
+			head.MinIndex = newMin
+			newState.segments = newState.segments.Set(head.BaseIndex, *head)
+		} else {
+			// If there is no head any more, then there is no tail either! We should
+			// create a new blank one ready for use when we next append like we do
+			// during initialization.
+			if err := w.createNextSegment(newState); err != nil {
+				return nil, err
+			}
 		}
-	}
 
-	// Commit updates to meta
-	if err := w.metaDB.CommitState(newState.Persistent()); err != nil {
-		return err
-	}
+		// Return a finalizer that will be called when all readers are done with the
+		// segments in the current state to close and delete old segments.
+		fin := func() {
+			w.closeSegments(toClose)
+			w.deleteSegments(toDelete)
+		}
+		return fin, nil
+	})
 
-	// Atomically update in-memory state
-	w.s.Store(newState)
-
-	// Close any readers or writes
-	w.closeSegments(toClose)
-
-	// Delete any files if we need to
-	w.deleteSegments(toDelete)
-
-	return nil
+	return w.mutateStateLocked(txn)
 }
 
 func (w *WAL) truncateTailLocked(newMax uint64) error {
-	s := w.s.Load()
+	txn := stateTxn(func(newState *state) (func(), error) {
+		// Reverse iterate the segments to find any that are entirely deleted.
+		toDelete := make(map[uint64]uint64)
+		toClose := make([]io.Closer, 0, 1)
+		it := newState.segments.Iterator()
+		it.Last()
 
-	// Shallow copy to update
-	newState := s
+		for !it.Done() {
+			_, seg, _ := it.Prev()
 
-	// Reverse iterate the segments to find any that are entirely deleted.
-	toDelete := make(map[uint64]uint64)
-	toClose := make([]io.Closer, 0, 1)
-	it := newState.segments.Iterator()
-	it.Last()
+			if seg.BaseIndex <= newMax {
+				// We're done
+				break
+			}
 
-	for !it.Done() {
-		_, seg, _ := it.Prev()
-
-		if seg.BaseIndex <= newMax {
-			// We're done
-			break
+			toDelete[seg.ID] = seg.BaseIndex
+			toClose = append(toClose, seg.r)
+			newState.segments = newState.segments.Delete(seg.ID)
 		}
 
-		toDelete[seg.ID] = seg.BaseIndex
-		toClose = append(toClose, seg.r)
-		newState.segments = newState.segments.Delete(seg.ID)
-	}
+		tail := newState.getTailInfo()
+		if tail != nil {
+			// Check that the tail is sealed (it won't be if we didn't need to remove
+			// the actual partial tail above).
+			if tail.SealTime.IsZero() {
+				tail.SealTime = time.Now()
+			}
+			// Update the MaxIndex
+			tail.MaxIndex = newMax
 
-	tail := newState.getTailInfo()
-	if tail != nil {
-		// Check that the tail is sealed (it won't be if we didn't need to remove
-		// the actual partial tail above).
-		if tail.SealTime.IsZero() {
-			tail.SealTime = time.Now()
+			// And update the tail in the new state
+			newState.segments = newState.segments.Set(tail.BaseIndex, *tail)
 		}
-		// Update the MaxIndex
-		tail.MaxIndex = newMax
 
-		// And update the tail in the new state
-		newState.segments = newState.segments.Set(tail.BaseIndex, *tail)
-	}
+		// Create the new tail segment
+		if err := w.createNextSegment(newState); err != nil {
+			return nil, err
+		}
 
-	// Create the new tail segment
-	if err := w.createNextSegment(&newState); err != nil {
-		return err
-	}
+		// Return a finalizer that will be called when all readers are done with the
+		// segments in the current state to close and delete old segments.
+		fin := func() {
+			w.closeSegments(toClose)
+			w.deleteSegments(toDelete)
+		}
+		return fin, nil
+	})
 
-	// Commit updates to meta
-	if err := w.metaDB.CommitState(newState.Persistent()); err != nil {
-		return err
-	}
-
-	// Atomically update in-memory state
-	w.s.Store(newState)
-
-	// Close any readers or writes
-	w.closeSegments(toClose)
-
-	// Delete any old files.
-	w.deleteSegments(toDelete)
-
-	return nil
+	return w.mutateStateLocked(txn)
 }
 
 func (w *WAL) deleteSegments(toDelete map[uint64]uint64) {
@@ -613,9 +638,6 @@ func (w *WAL) deleteSegments(toDelete map[uint64]uint64) {
 }
 
 func (w *WAL) closeSegments(toClose []io.Closer) {
-	// TODO(banks): it seems potentially racey to Close a segment when a reader
-	// might still be reading from it. I wonder if we need some sort or reference
-	// counting here to make this safe given that a reader doesn't hold the lock.
 	for _, c := range toClose {
 		if c != nil {
 			if err := c.Close(); err != nil {
