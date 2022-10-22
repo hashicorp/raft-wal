@@ -30,7 +30,7 @@ type state struct {
 
 	nextSegmentID uint64
 	segments      *immutable.SortedMap[uint64, SegmentInfo]
-	tail          segmentWriter
+	tail          SegmentWriter
 }
 
 // Commit converts the in-memory state into a PersistentState.
@@ -50,7 +50,7 @@ func (s *state) Persistent() PersistentState {
 func (s *state) getLog(index uint64) ([]byte, error) {
 	// Check the tail writer first
 	if s.tail != nil {
-		raw, err := s.tail.getLog(index)
+		raw, err := s.tail.GetLog(index)
 		if err != nil && err != ErrNotFound {
 			// Return actual errors since they might mask the fact that index really
 			// is in the tail but failed to read for some other reason.
@@ -68,7 +68,7 @@ func (s *state) getLog(index uint64) ([]byte, error) {
 		return nil, err
 	}
 
-	return seg.getLog(index)
+	return seg.GetLog(index)
 }
 
 // findSegmentReader searches the segment tree for the segment that contains the
@@ -77,7 +77,7 @@ func (s *state) getLog(index uint64) ([]byte, error) {
 // called after already checking with the tail writer whether the log is in
 // there which means the caller can be sure it's not going to return the tail
 // segment.
-func (s *state) findSegmentReader(idx uint64) (segmentReader, error) {
+func (s *state) findSegmentReader(idx uint64) (SegmentReader, error) {
 
 	if s.segments.Len() == 0 {
 		return nil, ErrNotFound
@@ -117,8 +117,8 @@ func (s *state) getTailInfo() *SegmentInfo {
 	return &tail
 }
 
-func (s *state) append(entries []logEntry) error {
-	return s.tail.append(entries)
+func (s *state) append(entries []LogEntry) error {
+	return s.tail.Append(entries)
 }
 
 func (s *state) firstIndex() uint64 {
@@ -131,7 +131,7 @@ func (s *state) firstIndex() uint64 {
 }
 
 func (s *state) lastIndex() uint64 {
-	tailIdx := s.tail.lastIndex()
+	tailIdx := s.tail.LastIndex()
 	if tailIdx > 0 {
 		return tailIdx
 	}

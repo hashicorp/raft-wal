@@ -31,7 +31,7 @@ var (
 type WAL struct {
 	dir    string
 	codec  Codec
-	sf     segmentFiler
+	sf     SegmentFiler
 	metaDB MetaStore
 	log    hclog.Logger
 
@@ -92,7 +92,7 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 		// Verify we can decode the entries.
 		// TODO: support multiple decoders to allow rotating codec.
 		if si.Codec != w.codec.ID() {
-			return nil, fmt.Errorf("segment file %s: uses an unknown codec", si.fileName())
+			return nil, fmt.Errorf("segment with BasedIndex=%d uses an unknown codec", si.BaseIndex)
 		}
 
 		// We want to keep this segment since it's still in the metaDB list!
@@ -328,7 +328,7 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 	}
 
 	// Encode logs
-	encoded := make([]logEntry, len(logs))
+	encoded := make([]LogEntry, len(logs))
 	for i, l := range logs {
 		if lastIdx > 0 && l.Index != (lastIdx+1) {
 			return fmt.Errorf("non-monotonic log entries: tried to append index %d after %d", logs[0].Index, lastIdx)
@@ -344,11 +344,11 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 		encoded[i].Index = l.Index
 		lastIdx = l.Index
 	}
-	if err := s.tail.append(encoded); err != nil {
+	if err := s.tail.Append(encoded); err != nil {
 		return err
 	}
 	// Check if we need to roll logs
-	if s.tail.full() {
+	if s.tail.Full() {
 		if err := w.rotateSegmentLocked(); err != nil {
 			return err
 		}
@@ -452,6 +452,21 @@ func (w *WAL) GetUint64(key []byte) (uint64, error) {
 
 func (w *WAL) rotateSegmentLocked() error {
 	txn := func(newState *state) (func(), error) {
+		// TODO: we probably need a Seal method in SegmentWriter interface because
+		// the last append probably added at least one extra block past the end of
+		// the pre-allocated file which probably wasn't written out yet etc. We need
+		// to know the final number of blocks in the file to store in the metadata
+		// as well as giving...
+		//
+		// How about this:
+		//  - Replace `Full` with `Sealed` which returns a bool as well as the final number of blocks written.
+		//  - After Append we call `Sealed` and if true we pass number of blocks through here so we can update it in meta.
+		//  - Implementations can decide when they actually write out the rest of
+		//    the data, for example it would be more efficient for Append to check
+		//    if the file is "full", and if so write out the last block index and
+		//    "seal" itself as part of the since append batch so we only have to
+		//    fsync the file once. Sealed then just returns the meta data from memory.
+
 		// Mark current tail as sealed in segments
 		tail := newState.getTailInfo()
 		if tail == nil {
@@ -464,7 +479,7 @@ func (w *WAL) rotateSegmentLocked() error {
 		// getTailInfo above, so we can mutate it safely and update the immutable
 		// state with our version.
 		tail.SealTime = time.Now()
-		tail.MaxIndex = newState.tail.lastIndex()
+		tail.MaxIndex = newState.tail.LastIndex()
 
 		// Update the old tail with the seal time etc.
 		newState.segments = newState.segments.Set(tail.BaseIndex, *tail)

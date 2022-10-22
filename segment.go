@@ -4,17 +4,16 @@
 package wal
 
 import (
-	"fmt"
 	"io"
 	"time"
 )
 
 const (
-	segmentFileSuffix = ".wal"
-	defaultBlockSize  = 1024 * 1024 // 1 MiB
-	defaultNumBlocks  = 64          // 64 MiB segments
+	defaultBlockSize = 1024 * 1024 // 1 MiB
+	defaultNumBlocks = 64          // 64 MiB segments
 )
 
+// SegmentInfo is the metadata describing a single WAL segment.
 type SegmentInfo struct {
 	// ID uniquely identifies this segment file
 	ID uint64
@@ -58,47 +57,39 @@ type SegmentInfo struct {
 	// sealed yet.
 	SealTime time.Time
 
-	// r is the logGetter for our in-memory state it's private so it won't be
+	// r is the segmentReader for our in-memory state it's private so it won't be
 	// serialized or visible to external callers like MetaStore implementations.
-	r segmentReader
+	r SegmentReader
 }
 
-func (i *SegmentInfo) fileName() string {
-	return fmt.Sprintf("%020d-%016x%s", i.BaseIndex, i.ID, segmentFileSuffix)
-}
-
-func (i *SegmentInfo) preallocatedSize() uint64 {
-	return uint64(i.BlockSize) * uint64(i.NumBlocks)
-}
-
-// logEntry represents an entry that has already been encoded.
-type logEntry struct {
+// LogEntry represents an entry that has already been encoded.
+type LogEntry struct {
 	Index uint64
 	Data  []byte
 }
 
-// segmentFiler is the interface that provides access to segments to the WAL. It
+// SegmentFiler is the interface that provides access to segments to the WAL. It
 // encapsulated creating, and recovering segments and returning reader or writer
 // interfaces to interact with them. It's main purpose is to abstract the core
 // WAL logic both from the actual encoding layer of segment files. You can think
 // of it as a layer of abstraction above the VFS which abstracts actual file
 // system operations on files but knows nothing about the format. In tests for
-// example we can implement a segmentFiler that is way simpler than the real
+// example we can implement a SegmentFiler that is way simpler than the real
 // encoding/decoding layer on top of a VFS - even an in-memory VFS which makes
 // tests much simpler to write and run.
-type segmentFiler interface {
+type SegmentFiler interface {
 	// Create adds a new segment with the given info and returns a writer or an
 	// error.
-	Create(info SegmentInfo) (segmentWriter, error)
+	Create(info SegmentInfo) (SegmentWriter, error)
 
 	// RecoverTail is called on an unsealed segment when re-opening the WAL it
 	// will attempt to recover from a possible crash. It will either return an
 	// error, or return a valid segmentWriter that is ready for further appends.
-	RecoverTail(info SegmentInfo) (segmentWriter, error)
+	RecoverTail(info SegmentInfo) (SegmentWriter, error)
 
 	// Open an already sealed segment for reading. Open may validate the file's
 	// header and return an error if it doesn't match the expected info.
-	Open(info SegmentInfo) (segmentReader, error)
+	Open(info SegmentInfo) (SegmentReader, error)
 
 	// List returns the set of segment IDs currently stored. It's used by the WAL
 	// on recovery to find any segment files that need to be deleted following a
@@ -114,40 +105,40 @@ type segmentFiler interface {
 	Delete(baseIndex, ID uint64) error
 }
 
-// segmentWriter manages appending logs to the tail segment of the WAL. It's an
-// interface to make testing core WAL simpler. Every segmentWriter will have
+// SegmentWriter manages appending logs to the tail segment of the WAL. It's an
+// interface to make testing core WAL simpler. Every SegmentWriter will have
 // either `init` or `recover` called once before any other methods. When either
 // returns it must either return an error or be ready to accept new writes and
 // reads.
-type segmentWriter interface {
+type SegmentWriter interface {
 	io.Closer
-	segmentReader
+	SegmentReader
 
-	// append adds one or more entries. It must not return until the entries are
+	// Append adds one or more entries. It must not return until the entries are
 	// durably stored otherwise raft's guarantees will be compromised.
-	append(entries []logEntry) error
+	Append(entries []LogEntry) error
 
-	// full returns true if the segment is considered full compared with it's
+	// Full returns true if the segment is considered full compared with it's
 	// pre-allocated size. It is called _after_ append which is expected to have
 	// worked regardless of the size of the append (i.e. the segment might have to
 	// grow beyond it's pre-allocated blocks to accommodate the final append).
-	full() bool
+	Full() bool
 
-	// lastIndex returns the most recently persisted index in the log. It must
+	// LastIndex returns the most recently persisted index in the log. It must
 	// respond without blocking on append since it's needed frequently by read
 	// paths that may call it concurrently. Typically this will be loaded from an
 	// atomic int. If the segment is empty lastIndex should return zero.
-	lastIndex() uint64
+	LastIndex() uint64
 }
 
-// segmentReader wraps a ReadableFile to allow lookup of logs in an existing
+// SegmentReader wraps a ReadableFile to allow lookup of logs in an existing
 // segment file. It's an interface to make testing core WAL simpler. The first
 // call will always be validate which passes in the ReaderAt to be used for
 // subsequent reads.
-type segmentReader interface {
+type SegmentReader interface {
 	io.Closer
 
-	// getLog returns the raw log entry bytes associated with idx. If the log
+	// GetLog returns the raw log entry bytes associated with idx. If the log
 	// doesn't exist in this segment ErrNotFound must be returned.
-	getLog(idx uint64) ([]byte, error)
+	GetLog(idx uint64) ([]byte, error)
 }

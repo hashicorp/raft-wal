@@ -183,7 +183,7 @@ The Block Trailer format is as follows:
 | `BatchStart`  | `uint32`    | The _file_ offset of the first frame in the current append batch. Used to validate checksum up to the end of this block. Note this is a file offset as the batch may span many blocks. |
 | `IndexStart`  | `uint32`    | The _file_ offset of the index frame for the block. May be zero if [there is no index frame](#index-frame). |
 | `NumEntries`  | `uint32`    | The number of log entries whose _first_ frame was in this block. Note this could be zero in case of a block with only `Middle` or `Last` frames. |
-| `CRC`         | `uint32`    | Castagnoli CRC32 of all frames (including headers and padding) from the larger of `BatchStart` offset or the start of the block until now. That includes the index frame and all empty space after it before the trailer. Also includes a CRC over the first 20 bytes of this trailer too. |
+| `CRC`         | `uint32`    | Castagnoli CRC32 of all frames (including headers and padding) from the smaller of `BatchStart` offset or the start of the block until now. That includes the index frame and all empty space after it before the trailer. Also includes a CRC over the first 20 bytes of this trailer too. |
 
 When appending to blocks, we take care to leave enough space for both the
 fixed-length trailer, and a proceeding index frame. The index frame is written
@@ -231,8 +231,8 @@ PrevBlocks   vBatchStart    BlkStart
 
 If `BatchStart` was in some previous block it means the whole of this block was
 filled as part of the batch. Calculate the CRC over all bytes in the block up to
-the last 4. This can be done in a streaming fashion say 64 KiB at a time to
-avoid reading the entire block into memory thanks to CRCs rolling property.
+the last 4. This can be done in a streaming fashion id desired thanks to CRCs
+rolling property.
 
 ### Frames
 

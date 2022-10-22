@@ -56,7 +56,7 @@ func segFull() testStorageOpt {
 	return func(ts *testStorage) {
 		seg := makeTestSegment(ts.setupMaxIndex)
 		es := makeLogEntries(seg.info().BaseIndex, seg.limit)
-		if err := seg.append(es); err != nil {
+		if err := seg.Append(es); err != nil {
 			panic(err)
 		}
 		// Seal "full" segments
@@ -79,7 +79,7 @@ func segTail(n int) testStorageOpt {
 	return func(ts *testStorage) {
 		seg := makeTestSegment(ts.setupMaxIndex)
 		es := makeLogEntries(seg.info().BaseIndex, n)
-		if err := seg.append(es); err != nil {
+		if err := seg.Append(es); err != nil {
 			panic(err)
 		}
 		ts.setupMaxIndex += uint64(seg.numLogs())
@@ -111,7 +111,7 @@ func makeTestSegment(baseIndex uint64) *testSegment {
 
 	ts.s.Store(testSegmentState{
 		info: info,
-		logs: &immutable.SortedMap[uint64, logEntry]{},
+		logs: &immutable.SortedMap[uint64, LogEntry]{},
 	})
 	return ts
 }
@@ -133,9 +133,9 @@ func stableInt(key string, val uint64) testStorageOpt {
 	}
 }
 
-func makeLogEntries(startIdx uint64, num int) []logEntry {
+func makeLogEntries(startIdx uint64, num int) []LogEntry {
 	codec := &BinaryCodec{}
-	entries := make([]logEntry, 0, num)
+	entries := make([]LogEntry, 0, num)
 	for _, log := range makeRaftLogs(startIdx, num) {
 		// Allocate a new buffer every time otherwise we end up returning slices to
 		// the same underlying buffer that is mutated in the next iteration.
@@ -145,7 +145,7 @@ func makeLogEntries(startIdx uint64, num int) []logEntry {
 		}
 		// need to copy the buffer since the next iteration may mutate the same
 		// underlying byteslice returned by Bytes
-		entries = append(entries, logEntry{
+		entries = append(entries, LogEntry{
 			Index: log.Index,
 			Data:  buf.Bytes(),
 		})
@@ -253,7 +253,7 @@ func (ts *testStorage) debugDump() string {
 		info := s.info()
 		fmt.Fprintf(&sb, "Seg[BaseIndex=%d ID=%d Logs=[%d..%d](%d) %v]",
 			info.BaseIndex, info.ID,
-			info.MinIndex, s.lastIndex(), s.numLogs(), s.full(),
+			info.MinIndex, s.LastIndex(), s.numLogs(), s.Full(),
 		)
 		sb.WriteRune('\n')
 	}
@@ -334,7 +334,7 @@ func (ts *testStorage) SetStable(key []byte, value []byte) error {
 }
 
 // Create implements segmentFiler
-func (ts *testStorage) Create(info SegmentInfo) (segmentWriter, error) {
+func (ts *testStorage) Create(info SegmentInfo) (SegmentWriter, error) {
 	ts.recordCall("Create")
 	_, ok := ts.segments[info.ID]
 	if ok {
@@ -345,14 +345,14 @@ func (ts *testStorage) Create(info SegmentInfo) (segmentWriter, error) {
 	}
 	sw.s.Store(testSegmentState{
 		info: info,
-		logs: &immutable.SortedMap[uint64, logEntry]{},
+		logs: &immutable.SortedMap[uint64, LogEntry]{},
 	})
 	ts.segments[info.ID] = sw
 	return sw, ts.createErr
 }
 
 // RecoverTail implements segmentFiler
-func (ts *testStorage) RecoverTail(info SegmentInfo) (segmentWriter, error) {
+func (ts *testStorage) RecoverTail(info SegmentInfo) (SegmentWriter, error) {
 	ts.recordCall("RecoverTail")
 	// Safety checks
 	sw, ok := ts.segments[info.ID]
@@ -367,7 +367,7 @@ func (ts *testStorage) RecoverTail(info SegmentInfo) (segmentWriter, error) {
 }
 
 // Open implements segmentFiler
-func (ts *testStorage) Open(info SegmentInfo) (segmentReader, error) {
+func (ts *testStorage) Open(info SegmentInfo) (SegmentReader, error) {
 	ts.recordCall("Open")
 	sw, ok := ts.segments[info.ID]
 	if !ok {
@@ -433,7 +433,7 @@ type testSegment struct {
 
 type testSegmentState struct {
 	info   SegmentInfo
-	logs   *immutable.SortedMap[uint64, logEntry]
+	logs   *immutable.SortedMap[uint64, LogEntry]
 	closed bool
 }
 
@@ -444,7 +444,7 @@ func (s *testSegment) Close() error {
 	})
 }
 
-func (s *testSegment) getLog(idx uint64) ([]byte, error) {
+func (s *testSegment) GetLog(idx uint64) ([]byte, error) {
 	state := s.s.Load()
 	if state.closed {
 		return nil, errors.New("closed")
@@ -460,7 +460,7 @@ func (s *testSegment) getLog(idx uint64) ([]byte, error) {
 	return log.Data, nil
 }
 
-func (s *testSegment) append(entries []logEntry) error {
+func (s *testSegment) Append(entries []LogEntry) error {
 	return s.mutate(func(newState *testSegmentState) error {
 		if newState.closed {
 			return errors.New("closed")
@@ -472,7 +472,7 @@ func (s *testSegment) append(entries []logEntry) error {
 	})
 }
 
-func (s *testSegment) full() bool {
+func (s *testSegment) Full() bool {
 	state := s.s.Load()
 	if state.closed {
 		panic("full on closed segment")
@@ -480,7 +480,7 @@ func (s *testSegment) full() bool {
 	return state.logs.Len() >= s.limit
 }
 
-func (s *testSegment) lastIndex() uint64 {
+func (s *testSegment) LastIndex() uint64 {
 	state := s.s.Load()
 	if state.closed {
 		panic("lastIndex on closed segment")
