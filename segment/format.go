@@ -52,7 +52,8 @@ const (
 )
 
 const ( // Start iota from 0
-	FrameFull uint8 = iota
+	FrameInvalid uint8 = iota
+	FrameFull
 	FrameFirst
 	FrameMiddle
 	FrameLast

@@ -256,12 +256,13 @@ header.
 
 | Type | Value | Description |
 | ---- | ----- | ----------- |
-| `Full`    | `0x0` | The frame contains an entire log entry. |
-| `First`   | `0x1` | The frame contains the first fragment of a longer log entry. |
-| `Middle`  | `0x2` | The frame contains a middle fragment of a longer log entry. |
-| `Last`    | `0x3` | The frame contains a last fragment of a longer log entry. |
-| `Index`   | `0x4` | The frame contains a block index array, not actual log entries. |
-| `Commit`  | `0x5` | The frame contains a CRC for all data written in a batch. |
+| `Invalid` | `0x0` | The frame is invalid. We make zero value invalid so we can detect unwritten frames cleanly. |
+| `Full`    | `0x1` | The frame contains an entire log entry. |
+| `First`   | `0x2` | The frame contains the first fragment of a longer log entry. |
+| `Middle`  | `0x3` | The frame contains a middle fragment of a longer log entry. |
+| `Last`    | `0x4` | The frame contains a last fragment of a longer log entry. |
+| `Index`   | `0x5` | The frame contains a block index array, not actual log entries. |
+| `Commit`  | `0x6` | The frame contains a CRC for all data written in a batch. |
 
 Note that `Commit` frames are a little different. They have no payload so
 `FrameLen` is always 0.

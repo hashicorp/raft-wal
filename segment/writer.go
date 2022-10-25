@@ -373,6 +373,7 @@ func (w *Writer) attemptRecoverTail(blockID, maxLen uint32) (discard, partial bo
 	offset := uint32(0)=
 	var lastCommitHdr *frameHeader
 	lastCommitOffset := uint32(0)
+	lastCommitNumEntries := 0
 	indexSizeAtLastCommit := 0
 	commitFrames := 0
 READ:
@@ -381,6 +382,12 @@ READ:
 		if err != nil {
 			return false, false, fmt.Errorf("failed to read frame %d from tail block %d: %w", len(tail.offsets), blockID, err)
 		}
+		if fh.typ == FrameInvalid {
+			// Zero type byte indicates either incomplete writes or the end of written
+			// data (zeros). Either way we've read all we can recover.
+			break READ
+		}
+
 		// Check we can actually read all the rest of the frame.
 		if (offset + frameHeaderLen + hdr.len) > maxLen {
 			// Shouldn't be possible - it's most likely a bug if we hit this. Could be
@@ -401,52 +408,55 @@ READ:
 			indexSizeAtLastCommit = len(tail.offsets)
 			lastCommitHdr = &fh
 			lastCommitOffset = offset
+			lastCommitNumEntries = len(tail.offsets)
 
 		case isIndexableFrame(fh):
 			tail.offsets = append(tail.offsets, offset)
 		}
 
-		offset += frameHeaderLen + fh.len
+		offset += encodedFrameSize(int(fh.len))
 	}
 
 	// Did we find any commit frames? Implement the cases spelled out in the doc
 	// comment.
 	switch {
 	case commitFrames == 0:
-		// We didn't find any commits so all of the data here was part of a partial
-		// write and should be treated as empty space. It's not "partial" because
-		// that indicates that it's intact but not the whole write but this is not
-		// even intact within this block since this is meant to be the tail block.
+		// We didn't find any commits so all of the data here (if any) was part of
+		// an interrupted write and should be treated as empty space. It's not
+		// "partial" because that indicates that it's intact but not the whole write
+		// but this is not even intact within this block since this is meant to be
+		// the tail block.
 		return true, false, nil
 
 	case commitFrames == 1:
-		// We found exactly one commit frame that means that the transaction
-		// _probably_ started in an earlier block. We need to verify the data in
-		// this block.
-		//
-		// TODO: this seems like a slight design issue that we can't tell the
-		// difference between the commit being complete but starting exactly at this
-		// block boundary, vs going back into previous block. It would _work_ in the
-		// sense that in that edge case where the penultimate batch exactly filled a
-		// block and so the last batch started right on a new block boundary, we'd
-		// just end up verifying _both_ the last commits. But it's kinda violating
-		// our design assumptions because if we _did_ do that and failed CRC
-		// validation due to a filesystem bug exposing silent corruption or similar,
-		// then we'd incorrectly just truncate away committed entries during
-		// recovery assuming they were just incomplete writes during a power
-		// failure. Given the lengths we've gone to to disambiguate, this feels like
-		// a bug in the design...
-		//
-		// WAIT: but even if we exactly fill a block in a commit (including the
-		// commit frame). Then we don't write out that block's header until the next
-		// append when we realise it doesn't fit...which means the blocks trailer
-		// will have a batchStart which is effectively the same as the indexStart
-		// (or blockTrailer if no index frame)... so that means that even though the
-		// commit technically doesn't append anything to that last complete block it
-		// did write out data within that block so we do still technically need to
-		// validate that last block trailer and index was complete. So I think it's
-		// actually fine!
+		// Commit frames are just a header so move the write cursor to just after
+		// the last commit frame.
+		w.writer.writeOffset = lastCommitOffset+frameHeaderLen
 
+		// If we only found one commit frame, there are two possible outcomes:
+		//  1. If there were later frames _after_ that commit frame (but no other
+		//     commit frame) then we must have completed the commit frame's append
+		//     since we would never write another frame after a commit frame until
+		//     after fsync returned. That means, we can just truncate the partial
+		//     stuff and be confident we found committed tail - right after that
+		//     commit frame. We need to remove any indexes we added after though and
+		//     the cursor back to right after the commit frame.
+		//  2. If not, then we are done, but we know we've only seen the last part
+		//     of the last append batch so need to return partial == true to check
+		//     previous blocks too.
+		if lastCommitNumEntries < len(tail.offsets) {
+			// Case 1 from above, we have evidence that more data was written in a
+			// later append than the commit frame so it must have been fsynced.
+			// Truncate the uncommitted frames and we're done.
+			tail.offsets = tail.offsets[:lastCommitNumEntries]
+			return false, false, nil
+		}
+		// The last commit frame was the last frame in the block so we need to
+		// verify the whole commit made it to disk. We know that at least the
+		// previous block trailer was written in the same
+
+		// Return partial write.
+		return false, true, nil
 	}
 }
 
