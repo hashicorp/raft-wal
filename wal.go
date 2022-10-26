@@ -240,12 +240,9 @@ func (w *WAL) newSegment(ID, baseIndex uint64) SegmentInfo {
 		ID:        ID,
 		BaseIndex: baseIndex,
 		MinIndex:  baseIndex,
-		MaxIndex:  0, // Zero until sealed
 
 		// TODO make these configurable
 		Codec:      CodecBinaryV1,
-		BlockSize:  1024 * 1024, // 1 MiB
-		NumBlocks:  64,          // 64 MiB per segment
 		CreateTime: time.Now(),
 	}
 }
@@ -348,8 +345,12 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 		return err
 	}
 	// Check if we need to roll logs
-	if s.tail.Full() {
-		if err := w.rotateSegmentLocked(); err != nil {
+	sealed, indexStart, err := s.tail.Sealed()
+	if err != nil {
+		return err
+	}
+	if sealed {
+		if err := w.rotateSegmentLocked(indexStart); err != nil {
 			return err
 		}
 	}
@@ -450,7 +451,7 @@ func (w *WAL) GetUint64(key []byte) (uint64, error) {
 	return binary.LittleEndian.Uint64(raw), nil
 }
 
-func (w *WAL) rotateSegmentLocked() error {
+func (w *WAL) rotateSegmentLocked(indexStart uint64) error {
 	txn := func(newState *state) (func(), error) {
 		// TODO: we probably need a Seal method in SegmentWriter interface because
 		// the last append probably added at least one extra block past the end of
@@ -480,6 +481,7 @@ func (w *WAL) rotateSegmentLocked() error {
 		// state with our version.
 		tail.SealTime = time.Now()
 		tail.MaxIndex = newState.tail.LastIndex()
+		tail.IndexStart = indexStart
 
 		// Update the old tail with the seal time etc.
 		newState.segments = newState.segments.Set(tail.BaseIndex, *tail)

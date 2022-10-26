@@ -41,10 +41,10 @@ safety](#crash-safety) sections for more details.
 
 Here are some notable limitations of this design.
 
- * Segment files can't be larger than 4GiB.
- * Individual records can't be larger than 4GiB.
+ * Segment files can't be larger than 4GiB. (Current limit/default is 64MiB).
+ * Individual records can't be larger than 4GiB.  (Current limit/default is 64MiB).
  * Appended log entries have monotonically increasing `Index` fields with no
-   gaps.
+   gaps (though may start at any index in an empty log).
  * Only head or tail truncations are needed. `DeleteRange` will error if it's
    not a prefix of suffix of the log. `hashicorp/raft` never needs that.
  * No encryption or compression support.
@@ -88,15 +88,15 @@ type segmentInfo struct {
   MinIndex   uint64
   MaxIndex   uint64
   Codec      uint64
-  BlockSize  uint32
-  NumBlocks  uint32
+  IndexStart uint64
   CreateTime time.Time
   SealTime   time.Time
 }
 ```
 
 The last segment (with highest key) is the "tail" and must be the only one where
-`SealTime = 0`.
+`SealTime = 0`. `IndexStart` and `MaxIndex` are also zero until the segments is
+sealed too.
 
 BoltDB's major performance issue currently is when large amounts of logs are
 written and then truncated, the overhead of tracking all the freespace in the
@@ -119,9 +119,6 @@ the freelist will never be larger than a single 4KB page.
 Segment files are pre-allocated (best effort) on creation to a fixed size, by
 default we use 64MiB segment files.
 
-Segment file format is inspired [by
-RocksDB](https://github.com/facebook/rocksdb/wiki/Write-Ahead-Log-File-Format).
-
 The file starts with a fixed-size header that is written once on creation.
 
 ```
@@ -129,11 +126,11 @@ The file starts with a fixed-size header that is written once on creation.
 +------+------+------+------+------+------+------+------+
 | Magic                     | Reserved           | Vsn  |
 +------+------+------+------+------+------+------+------+
-| BlockSize                 | NumBlocks                 |
-+------+------+------+------+------+------+------+------+
 | BaseIndex                                             |
 +------+------+------+------+------+------+------+------+
 | SegmentID                                             |
++------+------+------+------+------+------+------+------+
+| Codec                                                 |
 +------+------+------+------+------+------+------+------+
 ```
 
@@ -142,157 +139,66 @@ The file starts with a fixed-size header that is written once on creation.
 | `Magic`      | `uint32`  | The randomly chosen value `0x58eb6b0d`. |
 | `Reserved`   | `[3]byte` | Bytes reserved for future file flags. |
 | `Vsn`        | `uint8`   | The version of the file, currently `0x0`. |
-| `BlockSize`  | `uint32`  | The size in bytes for each indexed block. |
-| `NumBlocks`  | `uint32`  | The number of blocks preallocated in this segment file. |
 | `BaseIndex`  | `uint64`  | The raft Index of the first entry that will be stored in this file. |
 | `SegmentID`  | `uint64`  | A unique identifier for this segment file. |
+| `Codec`      | `uint64`  | The codec used to write the file. |
 
 Each segment file is named `<BaseIndex>-<SegmentID>.wal`. `BaseIndex` is
 formatted in decimal with leading zeros and a fixed width of 20 chars.
 `SegmentID` is formatted in lower-case hex with zero padding to 16 chars wide.
 File names are also used as meta DB keys so need to sort lexicographically.
 
-### Blocks
-
-Log entries are appended to the file following the header. The last 24 bytes of
-each `BlockSize` (1MiB default) of the file contains a special record called the
-`BlockTrailer`.
-
-This trailer enables:
- 1. Incrementally writing out index as we go so recovery only has to scan the
-    last block of the file.
- 2. Allows for [binary search for specific entries](#log-lookup-by-index) in
-    completed segments.
-
-The Block Trailer format is as follows:
-
-```
-0      1      2      3      4      5      6      7      8
-+------+------+------+------+------+------+------+------+
-| FirstIndex                                            |
-+------+------+------+------+------+------+------+------+
-| BatchStart                | IndexStart                |
-+------+------+------+------+------+------+------+------+
-| NumEntries                | CRC                       |
-+------+------+------+------+------+------+------+------+
-```
-
-| Field         | Type        | Description |
-| ------------- | ----------- | ----------- |
-| `FirstIndex`  | `uint64`    | The raft index of the first entry that starts in this block. In the special case of a whole block taken up by a single non-first fragment of an entry larger than `BlockSize` this contains the index of that entry. This case is distinguishable because `NumEntries` will be zero. |
-| `BatchStart`  | `uint32`    | The _file_ offset of the first frame in the current append batch. Used to validate checksum up to the end of this block. Note this is a file offset as the batch may span many blocks. |
-| `IndexStart`  | `uint32`    | The _file_ offset of the index frame for the block. May be zero if [there is no index frame](#index-frame). |
-| `NumEntries`  | `uint32`    | The number of log entries whose _first_ frame was in this block. Note this could be zero in case of a block with only `Middle` or `Last` frames. |
-| `CRC`         | `uint32`    | Castagnoli CRC32 of all frames (including headers and padding) from the smaller of `BatchStart` offset or the start of the block until now. That includes the index frame and all empty space after it before the trailer. Also includes a CRC over the first 20 bytes of this trailer too. |
-
-When appending to blocks, we take care to leave enough space for both the
-fixed-length trailer, and a proceeding index frame. The index frame is written
-out as soon as there is no more room in the block for the current index and
-trailer, the indexes frame header plus an extra index entry, frame header and at
-least 128 bytes for the new frame (since wasting a few bytes is probably better
-than having to piece together fragments with just a few bytes in).
-
-So the last frame before the trailer in each complete block will be type
-`Index`, detailed below.
-
-#### Block CRC
-
-The last 4 bytes of the block trailer are the CRC used to detect torn writes.
-The CRC is only calculated over bytes in the block that were written during the
-same append batch that writes the trailer itself.
-
-```
-Case: BatchStart in same block
-
-BlkStart    vBatchStart
-+----...----+------------+-------------+----+---------+-----+
-|           |h| entry  |0|h| index     |0000| trailer | CRC |
-+----...----+------------+-------------+----+---------+-----+
-            ^-----------------------------------------^
-                  CRC calculated over these bytes
-```
-
-If a single append batch adds just one frame to the block before it's full and
-then adds the index and trailer, `BatchStart` will point to the offset of that
-one frame and the CRC will be calculated over only that one frame (and its
-alignment padding), the index frame, the zeroes after the index frame before the
-trailer and the bytes of the trailer except for the last 4.
-
-```
-Case: BatchStart in a previous block
-
-PrevBlocks   vBatchStart    BlkStart
-+-------...--+------...-----+------...------+-------------+----+---------+-----+
-|            |              | record frames |h| index     |0000| trailer | CRC |
-+-------...--+------...-----+------...------+-------------+----+---------+-----+
-                            ^--------------------------------------------^
-                                   CRC calculated over these bytes
-```
-
-If `BatchStart` was in some previous block it means the whole of this block was
-filled as part of the batch. Calculate the CRC over all bytes in the block up to
-the last 4. This can be done in a streaming fashion id desired thanks to CRCs
-rolling property.
-
 ### Frames
 
-Actual log entries are stored in frames. Each frame starts with a fixed-length
-header.
+Log entries are stored in consecutive frames after the header. As well as log
+entry frames there are a few meta data frame types too. Each frame starts with
+an 8-byte header.
 
 ```
 0      1      2      3      4      5      6      7      8
 +------+------+------+------+------+------+------+------+
-| Type | FrameLen           | EntryLen/CRC              |
+| Type | Reserved           | Length/CommitStart        |
 +------+------+------+------+------+------+------+------+
 ```
 
 | Field         | Type        | Description |
 | ------------- | ----------- | ----------- |
 | `Type`        | `uint8`     | The frame type. See below. |
-| `FrameLen`    | `uint24`    | The length (not including this header) of the payload of this frame. Note this is just 3 bytes since the largest a single frame can be is less than `BlockSize` and we don't anticipate supporting `BlockSize > 16MiB`. |
-| `EntryLen`    | `uint32`    | For `First` fragments this contains the total length of the fragmented record to allow allocating enough space to read it up front. |
-| `CRC`         | `uint32`    | For `Commit` frames, the Rolling Castagnoli CRC32 of all data appended in the current batch and block. See [Commit CRC](#commit-crc). |
+| `Length/CommitStart` | `uint32`    | Depends on Type. See Below |
 
 
 | Type | Value | Description |
 | ---- | ----- | ----------- |
 | `Invalid` | `0x0` | The frame is invalid. We make zero value invalid so we can detect unwritten frames cleanly. |
-| `Full`    | `0x1` | The frame contains an entire log entry. |
-| `First`   | `0x2` | The frame contains the first fragment of a longer log entry. |
-| `Middle`  | `0x3` | The frame contains a middle fragment of a longer log entry. |
-| `Last`    | `0x4` | The frame contains a last fragment of a longer log entry. |
-| `Index`   | `0x5` | The frame contains a block index array, not actual log entries. |
-| `Commit`  | `0x6` | The frame contains a CRC for all data written in a batch. |
-
-Note that `Commit` frames are a little different. They have no payload so
-`FrameLen` is always 0.
+| `Entry`   | `0x1` | The frame contains an entire log entry. |
+| `Index`   | `0x2` | The frame contains an index array, not actual log entries. |
+| `Commit`  | `0x3` | The frame contains a CRC for all data written in a batch. |
 
 #### Index Frame
 
 An index frame payload is an array of uint32 file offsets for the records. The
 first element of the array contains the file offset of the frame containing the
-first fragment of the entry with index `FirstIndex` in the block trailer. This
-might not be the first frame in the block since the block might begin with
-either the file header (for the first block) or a `Last` frame of a previous
-record.
+first entry in the segment and so on.
 
-In cases where records are larger than whole blocks, at least one block will
-contain only a single `Middle` frame. In this case it will have no index record
-since there are zero entries that begin in this block. `IndexStart` will be `0`.
-This is safe because `IndexStart` is always a file offset and files always start
-with a file header so no valid index can start there.
+`Length` is used to indicate the length in bytes of the array (i.e. number of
+entries in the segments is Length/4).
 
-#### Commit CRC
+Index frames are written only when the segment is sealed and a commit frame
+follows to validate the final write.
 
-The CRC stored in a commit frame header is calculated over all bytes written to
-the same block in the same batch.
+#### Commit Frame
 
-If the batch started appending in the same block, this will be all bytes from
-immediately after the previous commit frame up to the commit frame header start
-(but not including it).
+A Commit frame marks the last write before fsync is called. In order to detect
+incompete or torn writes on recovery the commit frame stores a CRC of all the
+bytes appended since the last fsync.
 
-If the batch started appending in a previous block then this will be all bytes
-from the block start to the commit frame.
+`CommitStart` is used to specify the absolute file offset of the first byte
+written during this commit (i.e. right after the last commit frame or file
+header).
+
+The payload is a single 4 byte CRC32 (Castagnoli) over all bytes from
+`CommitStart` through to the end of the commit frame header. There are also 4
+bytes of padding to keep alignment. Later we could use these too.
 
 #### Alignment
 
@@ -302,60 +208,43 @@ correctness, but it's a simple way to improve our chances or being able to read
 through the file on a recovery.
 
 We add an implicit 0-7 null bytes after each frame to ensure the next frame
-header is aligned. This padding is _not_ represented in `FrameLen` but it is
-always present and is deterministic by rounding up `FrameLen` to the nearest
+header is aligned. This padding is _not_ represented in `Length` but it is
+always present and is deterministic by rounding up `Length` to the nearest
 multiple of 8. It is always accounted for when reading and CRCs are calculated
-over raw bytes written so always include the padding bytes.
+over raw bytes written so always include the padding (zero) bytes.
 
-Despite alignment we still don't blindly trust the headers we read are valid.
-The CRC check or invalid record format detect torn writes in the last batch
+Despite alignment we still don't blindly trust the headers we read are valid. A
+CRC mismatch or invalid record format indicate torn writes in the last batch
 written and we always safety check the size of lengths read before allocating
-them - frame lengths can't be bigger than `BlockSize`, file offsets can't be
-beyond the actual file size, and `EntryLen` can't be bigger than the space left
-in the segment file.
+them - Entry lengths can't be bigger than the `MaxEntrySize` which we default to
+64MiB.
+
+### Sealing
+
+Once a segment file has grown larger than the configured soft-limit (64MiB
+default), we "seal" it. This process involves:
+
+ 1. Write out the in-memory index of record offsets to an index frame.
+ 2. Write a commit frame to validate all bytes appended in this final append
+    (which probably inclided one or more records too to take the segment file
+    over the limit).
+ 3. Return the final MaxIndex and IndexStart to be stored in meta.db
+
+Sealed files can have their indexes read directly on open from the IndexStart in
+meta.db so records can be looked but in constant time.
 
 ## Log Lookup by Index
 
-Fixed-size blocks and pre-allocated segment files allow us to efficiently find a
-record by index (or similarly, the tail of the log) by binary search.
+For an unsealed segment we first lookup the offset in the in-memory index.
 
-We search for the block containing index K as follows:
- 1. Locate the correct segment (highest `BaseIndex` <= K) or return
-    `NotFound`
- 2. If the segment is the tail segment and the record is in the current partial
-    block being written, return it directly from memory.
- 3. Binary search the blocks in the file (i.e. starting at the middle). We use
-    `sort.Search` which finds the smallest block for which the func returns
-    true. We need this to be the block that contains K or `NumBlocks` if not
-    found. For each block we read the fixed-size trailer at the end.
-    1. If the trailer is all zeros, assume we are in the tail and the record is
-       in a lower block, return false.
-    2. If the trailer is non-zero but corrupt return `Corrupt` error
-    3. Otherwise return `Trailer.FirstIndex <= K`
-
-This finds the block where the entry `K` starts (or `NumBlocks`).
-
-Once we have the block, we can read the correct entry using the block index:
- 1. Read the relevant part of the index frame:
-    1. The `K` entry offset in the block (`blockOffset`) will be at `K` -
-       `FirstIndex`.
-    2. The first frame offset will be in in the index frame at `IndexStart` +
-       `FrameHdrSize` + `blockOffset`. Read a `uint32` value at that offset as
-       `frameStart`.
-    3. If `blockOffset < NumEntries-1` then also read the next frame offset into
-       `frameEnd`. If we just read the last offset, then use `frameEnd := IndexStart`.
-    4. Allocate a buffer big enough to read `frameEnd - frameStart` bytes
-    6. Read `frameStart` to `frameEnd` bytes into buffer and parse frame.
-       1. If a `Full` record return relevant slice minus header and padding.
-       2. If a `First` record, read the `EntryLen` and if needed re-allocate
-          buffer to fit the whole entry. Then continue reading frames from
-          block, wrapping over to next block(s) if necessary.
-
-Big-O performance is O(log N). We expect performance of lookups to be adequate
-on an SSD without further optimization. Especially given that Raft users
-typically wrap the `LogStore` in `raft.LogCache` that caches the most recent N
-entries in memory anyway and almost all accesses in steady state are for the
-most recent entries during replication.
+For a sealed segment we can discover the index frame location from the meta data
+and then perform a read at the right location in the file to lookup the record's
+offset. Implementations may choose to cache or memory map the index array but we
+will initially just read the specific entry we need each time and assume the OS
+page cache will make that fast for frequently accessed index areas or in-order
+traversals. We don't have to read the whole index, just the 4 byte entry we care
+about since we can work out it's offset from IndexStart, the BaseIndex of the
+segment, and the Index being searched for.
 
 # Crash Safety
 
@@ -374,19 +263,14 @@ the older entries, and that the system will never corrupt the already committed
 part of the sector even if it is not atomic and arbitrarily garbles the part of
 the sector we actually did write.
 
-At the end of each block we append a trailer with a checksum over the data
-written to that block _during this batch_. The CRC might be over the whole block
-if this batch has spanned multiple blocks but will commonly be only the suffix
-of the block that we appended in this batch. See [Block CRC](#block-crc).
-
-At the end of the batch we write a `Commit` frame containing the
-[CRC](#commit-crc) over the data in that partial block from the current batch.
+At the end of the batch we write a `Commit` frame containing the CRC over the
+data written during the current batch.
 
 In a crash one of the following states occurs:
- 1. All sectors modified across all blocks make it to disk (crash _after_ fsync).
+ 1. All sectors modified across all frames make it to disk (crash _after_ fsync).
  2. A torn write: one or more sectors, anywhere in the modified tail of the file
-    might not be persisted. We don't assume they are zero unlike some code, they
-    might be arbitrarily garbled (crash _before_ fsync).
+    might not be persisted. We don't assume they are zero, they might be
+    arbitrarily garbled (crash _before_ fsync).
 
 We can check which one of these is true with the recovery procedure outlined
 below. If we find the last batch _was_ torn. It must not have been acknowledged
@@ -396,37 +280,26 @@ the previous commit frame is the tail of the log we've actually acknowledged.
 ### Recovery
 
 We cover recovering the segments generally below since we have to account for
-truncations. All segments except the tail were fsynced before the new tail was
-added to the meta DB so we can assume they are all intact.
+truncations. All segments except the tail were fsynced during seal before the
+new tail was added to the meta DB so we can assume they are all made it to disk
+if a later tail was added.
 
 On startup we just need to recover the tail log as follows:
 
  1. If the file doesn't exist, create it from Meta DB information. DONE.
  2. Open file and validate header matches filename. If not delete it and go to 1.
- 3. Search for the last complete block. We can use binary search similar to [log
-    lookup](#log-lookup-by-index).
- 4. If there is a complete block found:
-    1. [validate it's CRC](#block-crc) to ensure that all data written to that
-    block in the last append batch is intact.
-    2. If the `BatchStart` on the last block trailer is in a previous block,
-       validate the CRCs of all blocks from there to the last complete block
-       too.
-    3. If any block CRCs don't match, treat `BatchStart` as if it's the end of
-       the file and restart recovery from 3.
- 5. Read through the final partial block frame-by-frame, rebuilding an in-memory
-    index for the frame offsets.
- 6. When we run out of frames (all zero, or invalid header, or index frame, or
-    end of block)
-    1. Check the last frame is a `Commit` frame, if not ROLLBACK.
-    2. Validate the CRC in commit frame from start of block or previous commit frame in block. If it fails ROLLBACK.
-    3. If it's valid, we found the tail and last batch is intact. DONE.
- 7. If we need to ROLLBACK, find the previous commit frame from the last frame
-    we read.
-    1. If there is no previous commit frame in the partial block, `BatchStart`
-       from the last block trailer becomes our new effective tail. Go back to
-       the start of the block that's in and read up to that point. We don't need
-       to validate checksums because we know all data up to `BatchStart` was
-       committed by `fsync` in the previous batch so can't be torn. DONE.
+ 3. Read all records in the file in sequence, keeping track of the last two
+    commit frames observed.
+    1. If the file ends with a corrupt frame or non commit frame, discard
+       anything after the last commit frame. We're DONE because we wouldn't have
+       written extra frames after commit until fsync completed so this commit
+       must have been acknowledged.
+    1. Else the file ends with a commit frame. Validate it's checksum. If it is good DONE.
+    2. If CRC is not good then discard everything back to previous commit frame and DONE.
+ 4. If we read an index frame in that process and the commit frame proceeding it
+    is the new tail then mark the segment as sealed and return the seal info
+    (crash occured after seal but before updating meta.db)
+
 
 ## Head Truncations
 

@@ -41,14 +41,9 @@ type SegmentInfo struct {
 	// a randomly generated identifier is almost certainly unique.
 	Codec uint64
 
-	// BlockSize is the configured size of each indexed block at the time this
-	// segment was created.
-	BlockSize uint32
-
-	// NumBlocks is the total number of blocks the file was pre-allocated with. In
-	// some file-systems that don't support pre-allocation the file might not
-	// actually be this long yet, but we treat it like it is.
-	NumBlocks uint32
+	// IndexStart is the file offset where the index can be read from it's 0 for
+	// tail segments and only set after a segment is sealed.
+	IndexStart uint64
 
 	// CreateTime records when the segment was first created.
 	CreateTime time.Time
@@ -118,11 +113,12 @@ type SegmentWriter interface {
 	// durably stored otherwise raft's guarantees will be compromised.
 	Append(entries []LogEntry) error
 
-	// Full returns true if the segment is considered full compared with it's
-	// pre-allocated size. It is called _after_ append which is expected to have
-	// worked regardless of the size of the append (i.e. the segment might have to
-	// grow beyond it's pre-allocated blocks to accommodate the final append).
-	Full() bool
+	// Sealed returns whether the segment is sealed or not. If it is it returns
+	// true and the file offset that it's index array starts at to be saved in
+	// meta data. WAL will call this after every append so it should be relatively
+	// cheap in the common case. This design allows the final Append to write out
+	// the index or any additional data needed at seal time in the same fsync.
+	Sealed() (bool, uint64, error)
 
 	// LastIndex returns the most recently persisted index in the log. It must
 	// respond without blocking on append since it's needed frequently by read

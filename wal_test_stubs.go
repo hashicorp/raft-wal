@@ -104,8 +104,6 @@ func makeTestSegment(baseIndex uint64) *testSegment {
 		ID:         baseIndex, // for now just use 1:1 baseIndex and ID
 		MinIndex:   baseIndex,
 		Codec:      CodecBinaryV1,
-		BlockSize:  defaultBlockSize, // Don't really matter at this level
-		NumBlocks:  defaultNumBlocks, // Don't really matter at this level
 		CreateTime: time.Now(),
 	}
 
@@ -251,9 +249,10 @@ func (ts *testStorage) debugDump() string {
 	sb.WriteRune('\n')
 	for _, s := range sorted {
 		info := s.info()
+		sealed, _, _ := s.Sealed()
 		fmt.Fprintf(&sb, "Seg[BaseIndex=%d ID=%d Logs=[%d..%d](%d) %v]",
 			info.BaseIndex, info.ID,
-			info.MinIndex, s.LastIndex(), s.numLogs(), s.Full(),
+			info.MinIndex, s.LastIndex(), s.numLogs(), sealed,
 		)
 		sb.WriteRune('\n')
 	}
@@ -472,12 +471,12 @@ func (s *testSegment) Append(entries []LogEntry) error {
 	})
 }
 
-func (s *testSegment) Full() bool {
+func (s *testSegment) Sealed() (bool, uint64, error) {
 	state := s.s.Load()
 	if state.closed {
-		panic("full on closed segment")
+		panic("sealed on closed segment")
 	}
-	return state.logs.Len() >= s.limit
+	return state.logs.Len() >= s.limit, 12345, nil
 }
 
 func (s *testSegment) LastIndex() uint64 {

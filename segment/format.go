@@ -21,26 +21,11 @@ const (
 	// corrupted.
 	MaxEntrySize = 64 * 1024 * 1024 // 64 MiB
 
-	// MaxBlockSize is the largest block size this format supports.
-	MaxBlockSize = 16 * 1024 * 1024 // 16 MiB
-
-	DefaultBlockSize = 1024 * 1024 // 1 MiB
-
-	DefaultNumBlocks = 64 // 64 MiB segments by default
-
-	maxFrameLen = MaxBlockSize
-
 	// minBufSize is the size we allocate read and write buffers. Setting it
 	// larger wastes more memory but increases the chances that we'll read the
 	// whole frame in a single shot and not need a second allocation and trip to
 	// the disk.
 	minBufSize = 64 * 1024
-
-	// minFragmentLen is the smallest First fragment we'll take from the start of
-	// a record to fit it in a block. This means we might "waste" up to this many
-	// bytes in the block but with the benefit that reading the record is probably
-	// faster as there are fewer IOs needed.
-	minFragmentLen = 64
 
 	fileHeaderLen = 32
 	version       = 0
@@ -49,16 +34,11 @@ const (
 	// Note that this must remain a power of 2 to ensure aligning to this also
 	// aligns to sector boundaries.
 	frameHeaderLen = 8
-
-	blockTrailerLen = 24
 )
 
 const ( // Start iota from 0
 	FrameInvalid uint8 = iota
-	FrameFull
-	FrameFirst
-	FrameMiddle
-	FrameLast
+	FrameEntry
 	FrameIndex
 	FrameCommit
 )
@@ -77,11 +57,11 @@ var (
 	+------+------+------+------+------+------+------+------+
 	| Magic                     | Reserved           | Vsn  |
 	+------+------+------+------+------+------+------+------+
-	| BlockSize                 | NumBlocks                 |
-	+------+------+------+------+------+------+------+------+
 	| BaseIndex                                             |
 	+------+------+------+------+------+------+------+------+
 	| SegmentID                                             |
+	+------+------+------+------+------+------+------+------+
+	| Codec                                                 |
 	+------+------+------+------+------+------+------+------+
 
 */
