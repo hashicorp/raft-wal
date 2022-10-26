@@ -157,14 +157,14 @@ an 8-byte header.
 ```
 0      1      2      3      4      5      6      7      8
 +------+------+------+------+------+------+------+------+
-| Type | Reserved           | Length/CommitStart        |
+| Type | Reserved           | Length/CRC                |
 +------+------+------+------+------+------+------+------+
 ```
 
 | Field         | Type        | Description |
 | ------------- | ----------- | ----------- |
 | `Type`        | `uint8`     | The frame type. See below. |
-| `Length/CommitStart` | `uint32`    | Depends on Type. See Below |
+| `Length/CRC` | `uint32`    | Depends on Type. See Below |
 
 
 | Type | Value | Description |
@@ -189,16 +189,15 @@ follows to validate the final write.
 #### Commit Frame
 
 A Commit frame marks the last write before fsync is called. In order to detect
-incompete or torn writes on recovery the commit frame stores a CRC of all the
+incomplete or torn writes on recovery the commit frame stores a CRC of all the
 bytes appended since the last fsync.
 
-`CommitStart` is used to specify the absolute file offset of the first byte
-written during this commit (i.e. right after the last commit frame or file
-header).
+`CRC` is used to specify a CRC32 (Castagnoli) over all bytes written since the
+last fsync. That is, since just after the last commit frame, or just after the
+file header.
 
-The payload is a single 4 byte CRC32 (Castagnoli) over all bytes from
-`CommitStart` through to the end of the commit frame header. There are also 4
-bytes of padding to keep alignment. Later we could use these too.
+There are also 4 bytes of padding to keep alignment. Later we could
+use these too.
 
 #### Alignment
 

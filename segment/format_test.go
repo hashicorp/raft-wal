@@ -28,8 +28,7 @@ func TestFileHeaderCodec(t *testing.T) {
 			info: wal.SegmentInfo{
 				BaseIndex: 1234,
 				ID:        4321,
-				BlockSize: DefaultBlockSize,
-				NumBlocks: DefaultNumBlocks,
+				Codec:     wal.CodecBinaryV1,
 			},
 		},
 		{
@@ -37,8 +36,7 @@ func TestFileHeaderCodec(t *testing.T) {
 			info: wal.SegmentInfo{
 				BaseIndex: 1234,
 				ID:        4321,
-				BlockSize: DefaultBlockSize,
-				NumBlocks: DefaultNumBlocks,
+				Codec:     wal.CodecBinaryV1,
 			},
 			bufSize:      10,
 			wantWriteErr: "short buffer",
@@ -48,8 +46,7 @@ func TestFileHeaderCodec(t *testing.T) {
 			info: wal.SegmentInfo{
 				BaseIndex: 1234,
 				ID:        4321,
-				BlockSize: DefaultBlockSize,
-				NumBlocks: DefaultNumBlocks,
+				Codec:     wal.CodecBinaryV1,
 			},
 			corrupt: func(buf []byte) []byte {
 				return buf[0:5]
@@ -61,8 +58,7 @@ func TestFileHeaderCodec(t *testing.T) {
 			info: wal.SegmentInfo{
 				BaseIndex: 1234,
 				ID:        4321,
-				BlockSize: DefaultBlockSize,
-				NumBlocks: DefaultNumBlocks,
+				Codec:     wal.CodecBinaryV1,
 			},
 			corrupt: func(buf []byte) []byte {
 				buf[0] = 0xff
@@ -133,9 +129,8 @@ func TestFrameCodecFuzz(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		fuzz.Fuzz(&len)
 
-		fh.typ = FrameFirst
+		fh.typ = FrameEntry
 		fh.len = uint32(len)
-		fh.entryLenOrCRC = uint32(2 * len)
 
 		expectLen := encodedFrameSize(int(len))
 
@@ -206,34 +201,4 @@ func TestWriteIndexFrame(t *testing.T) {
 		require.Equal(t, uint32(i*64), got, "unexpected index value at offset %d", i)
 		offset += 4
 	}
-}
-
-func TestBlockTrailerCodecFuzz(t *testing.T) {
-	fuzz := fuzz.New()
-
-	var buf [1024]byte
-	var bt blockTrailer
-	for i := 0; i < 1000; i++ {
-		fuzz.Fuzz(&bt)
-
-		// Note we write it at the _end_ of the buffer
-		err := writeBlockTrailer(buf[1024-blockTrailerLen:], bt)
-		require.NoError(t, err)
-
-		// We mostly care about the start end...
-		t.Logf("[...] % x", buf[1024-blockTrailerLen:])
-
-		got, err := readBlockTrailer(buf[:])
-		require.NoError(t, err)
-		require.Equal(t, bt, got)
-	}
-}
-
-func TestNextBlockStart(t *testing.T) {
-	blockSize := uint32(1024)
-
-	require.Equal(t, 1024, int(nextBlockStart(blockSize, 0)))
-	require.Equal(t, 1024, int(nextBlockStart(blockSize, 1)))
-	require.Equal(t, 1024, int(nextBlockStart(blockSize, 1022)))
-	require.Equal(t, 2048, int(nextBlockStart(blockSize, 1024)))
 }

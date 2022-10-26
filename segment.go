@@ -52,6 +52,12 @@ type SegmentInfo struct {
 	// sealed yet.
 	SealTime time.Time
 
+	// SizeLimit is the soft limit for the segment's size. The segment file may be
+	// pre-allocated to this size on filesystems that support it. It is a soft
+	// limit in the sense that the final Append usually takes the segment file
+	// past this size before it is considered full and sealed.
+	SizeLimit uint32
+
 	// r is the segmentReader for our in-memory state it's private so it won't be
 	// serialized or visible to external callers like MetaStore implementations.
 	r SegmentReader
@@ -110,7 +116,8 @@ type SegmentWriter interface {
 	SegmentReader
 
 	// Append adds one or more entries. It must not return until the entries are
-	// durably stored otherwise raft's guarantees will be compromised.
+	// durably stored otherwise raft's guarantees will be compromised. Append must
+	// not be called concurrently with any other call to Sealed or Append.
 	Append(entries []LogEntry) error
 
 	// Sealed returns whether the segment is sealed or not. If it is it returns
@@ -118,10 +125,12 @@ type SegmentWriter interface {
 	// meta data. WAL will call this after every append so it should be relatively
 	// cheap in the common case. This design allows the final Append to write out
 	// the index or any additional data needed at seal time in the same fsync.
+	// Sealed must not be called concurrently with any other call to Sealed or
+	// Append.
 	Sealed() (bool, uint64, error)
 
 	// LastIndex returns the most recently persisted index in the log. It must
-	// respond without blocking on append since it's needed frequently by read
+	// respond without blocking on Append since it's needed frequently by read
 	// paths that may call it concurrently. Typically this will be loaded from an
 	// atomic int. If the segment is empty lastIndex should return zero.
 	LastIndex() uint64

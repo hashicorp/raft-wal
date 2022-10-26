@@ -159,6 +159,7 @@ func testFileFor(t *testing.T, r wal.SegmentReader) *testWritableFile {
 type testWritableFile struct {
 	buf           []byte
 	maxWritten    int
+	lastSyncStart int
 	closed, dirty bool
 }
 
@@ -183,6 +184,9 @@ func (f *testWritableFile) Dump() string {
 }
 
 func (f *testWritableFile) WriteAt(p []byte, off int64) (n int, err error) {
+	if !f.dirty {
+		f.lastSyncStart = int(off)
+	}
 	f.dirty = true
 	maxOffset := int(off) + len(p)
 	if maxOffset > len(f.buf) {

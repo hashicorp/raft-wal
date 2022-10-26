@@ -78,10 +78,9 @@ func writeFileHeader(buf []byte, info wal.SegmentInfo) error {
 	buf[5] = 0
 	buf[6] = 0
 	buf[7] = version
-	binary.LittleEndian.PutUint32(buf[8:12], info.BlockSize)
-	binary.LittleEndian.PutUint32(buf[12:16], info.NumBlocks)
-	binary.LittleEndian.PutUint64(buf[16:24], info.BaseIndex)
-	binary.LittleEndian.PutUint64(buf[24:32], info.ID)
+	binary.LittleEndian.PutUint64(buf[8:16], info.BaseIndex)
+	binary.LittleEndian.PutUint64(buf[16:24], info.ID)
+	binary.LittleEndian.PutUint64(buf[24:32], info.Codec)
 	return nil
 }
 
@@ -99,10 +98,9 @@ func readFileHeader(buf []byte) (*wal.SegmentInfo, error) {
 	if buf[7] != version {
 		return nil, wal.ErrCorrupt
 	}
-	i.BlockSize = binary.LittleEndian.Uint32(buf[8:12])
-	i.NumBlocks = binary.LittleEndian.Uint32(buf[12:16])
-	i.BaseIndex = binary.LittleEndian.Uint64(buf[16:24])
-	i.ID = binary.LittleEndian.Uint64(buf[24:32])
+	i.BaseIndex = binary.LittleEndian.Uint64(buf[8:16])
+	i.ID = binary.LittleEndian.Uint64(buf[16:24])
+	i.Codec = binary.LittleEndian.Uint64(buf[24:32])
 	return &i, nil
 }
 
@@ -112,36 +110,39 @@ func validateFileHeader(buf []byte, expect wal.SegmentInfo) error {
 		return err
 	}
 
-	if got.BaseIndex != expect.BaseIndex ||
-		got.ID != expect.ID ||
-		got.BlockSize != expect.BlockSize ||
-		got.NumBlocks != expect.NumBlocks {
-		return wal.ErrCorrupt
+	if expect.ID != got.ID {
+		return fmt.Errorf("%w: segment header ID %x doesn't match metadata %x",
+			wal.ErrCorrupt, got.ID, expect.ID)
 	}
+	if expect.BaseIndex != got.BaseIndex {
+		return fmt.Errorf("%w: segment header BaseIndex %d doesn't match metadata %d",
+			wal.ErrCorrupt, got.BaseIndex, expect.BaseIndex)
+	}
+	if expect.Codec != got.Codec {
+		return fmt.Errorf("%w: segment header Codec %d doesn't match metadata %d",
+			wal.ErrCorrupt, got.Codec, expect.Codec)
+	}
+
 	return nil
 }
 
 /*
-	  Frame Functions
+	Frame Functions
 
-		0      1      2      3      4      5      6      7      8
-		+------+------+------+------+------+------+------+------+
-		| Type | FrameLen           | EntryLen/CRC              |
-		+------+------+------+------+------+------+------+------+
+	0      1      2      3      4      5      6      7      8
+	+------+------+------+------+------+------+------+------+
+	| Type | Reserved           | Length/CRC                |
+	+------+------+------+------+------+------+------+------+
 */
 
 type frameHeader struct {
-	typ           uint8
-	len           uint32
-	entryLenOrCRC uint32
-}
-
-func isIndexableFrame(fh frameHeader) bool {
-	return fh.typ == FrameFull || fh.typ == FrameFirst
+	typ uint8
+	len uint32
+	crc uint32
 }
 
 func writeFrame(buf []byte, h frameHeader, payload []byte) error {
-	if len(buf) < encodedFrameSize(int(h.len)) || h.len > 1<<24 {
+	if len(buf) < encodedFrameSize(int(h.len)) {
 		return io.ErrShortBuffer
 	}
 	if err := writeFrameHeader(buf, h); err != nil {
@@ -161,10 +162,14 @@ func writeFrameHeader(buf []byte, h frameHeader) error {
 		return io.ErrShortBuffer
 	}
 	buf[0] = h.typ
-	buf[1] = byte(h.len)       // FrameLen least significant byte
-	buf[2] = byte(h.len >> 8)  // FrameLen
-	buf[3] = byte(h.len >> 16) // FrameLen most significant byte
-	binary.LittleEndian.PutUint32(buf[4:8], h.entryLenOrCRC)
+	buf[1] = 0
+	buf[2] = 0
+	buf[3] = 0
+	lOrCRC := h.len
+	if h.typ == FrameCommit {
+		lOrCRC = h.crc
+	}
+	binary.LittleEndian.PutUint32(buf[4:8], lOrCRC)
 	return nil
 }
 
@@ -189,12 +194,14 @@ func readFrameHeader(buf []byte) (frameHeader, error) {
 		}
 		return h, fmt.Errorf("%w: corrupt frame header with type 0 but non-zero other fields", wal.ErrCorrupt)
 
-	case FrameFull, FrameFirst, FrameMiddle, FrameLast, FrameIndex, FrameCommit:
+	case FrameEntry, FrameIndex:
 		h.typ = buf[0]
-	}
+		h.len = binary.LittleEndian.Uint32(buf[4:8])
 
-	h.len = uint32(buf[1]) | uint32(buf[2])<<8 | uint32(buf[3])<<16
-	h.entryLenOrCRC = binary.LittleEndian.Uint32(buf[4:8])
+	case FrameCommit:
+		h.typ = buf[0]
+		h.crc = binary.LittleEndian.Uint32(buf[4:8])
+	}
 	return h, nil
 }
 
@@ -217,63 +224,13 @@ func encodedFrameSize(payloadLen int) int {
 	return frameHeaderLen + payloadLen + padLen(payloadLen)
 }
 
-// maxIndexSize returns the limit on how many entries we want to be able to
-// index per block. Having this fixed allows us to allocate enough memory up
-// front and not have to extend the backing array as we go which makes
-// concurrency much harder to reason about. This heuristic was chosen after a
-// lot of thought. Here's the rationale:
-//
-// Firstly, the absolute limit for this encoding assuming that a block was
-// filled entirely with frames with zero byte payloads and zero commit frames
-// (which don't consume index space), that is still 8 bytes of frame header and
-// 4 bytes for the index entry for each one. So even ignoring the trailer and
-// index frame header, there is an absolute upper bound of BlockSize/12 entries.
-// For 1MiB blocks that would be ~87k entries consuming ~350KiB of index. Just
-// always allocating 350KiB is not a huge deal especially since it's only one
-// tail not one per block etc.
-//
-// But that scenario is not very realistic. Even if Raft were storing only empty
-// payloads (which itself is extremely unlikely) our current BinaryCodec would
-// need something like 18 bytes on average even for the first block of the log
-// with smallest indexes. (Mostly due to the time.Time taking 12 bytes), So the
-// maximum entries is more like BlockSize/(12+18). If we also take the liberty
-// of assuming that there are at least 2 bytes of payload on average then it's
-// BlockSize/32. This is still extremely conservative although it's technically
-// possible that with a custom codec and unrealistic write conditions you could
-// get smaller. But the worst that can happen if we run out of index entries in
-// a block before we run out of space is that we waste a few KiB of space. We're
-// already way more efficient than a B-tree on space which tends to only half
-// fill each page etc. So this seems unnecessary to optimize away at cost of
-// memory allocations we will never use in practice.
-//
-// So we pick the BlockSize/32 as the max number of entries. For 1MiB blocks
-// that means ~32k entries or 128KiB of index needed. That seems fine! This also
-// doesn't seem unreasonable if we later want to try larger blocks up to our max
-// of 16MiB which would need 2MiB of index.
-func maxIndexSize(blockSize int) int {
-	return blockSize / 32
-}
-
-// initIndexSize returns a suitable value to use when allocating index arrays.
-// It's not critical since they can be safely re-allocated and copied if we need
-// more room, but we hope that won't be too common! Assume that each entry on
-// average is at least 64 bytes encoded (that's about 32 bytes of raw user data
-// with current encoding). We can't store more than this number in a block
-// anyway (ignoring index, trailers and padding overhead as this is just a rough
-// guess)
-func initIndexSize(blockSize int) int {
-	return blockSize / 64
-}
-
 func indexFrameSize(numEntries int) int {
 	// Index frames are completely unnecessary if the whole block is a
 	// continuation with no new entries.
 	if numEntries == 0 {
 		return 0
 	}
-	// Index frames don't need padding as the next record is always the block
-	// trailer and is written in the same write.
-	return frameHeaderLen + (4 * numEntries)
+	return encodedFrameSize(numEntries * 4)
 }
 
 func writeIndexFrame(buf []byte, offsets []uint32) error {
@@ -292,78 +249,9 @@ func writeIndexFrame(buf []byte, offsets []uint32) error {
 		binary.LittleEndian.PutUint32(buf[cursor:], o)
 		cursor += 4
 	}
-	// No padding needed as there is no header to be written after
-	return nil
-}
-
-/*
-
-  Block Functions
-
-	Block trailer:
-
-	0      1      2      3      4      5      6      7      8
-	+------+------+------+------+------+------+------+------+
-	| FirstIndex                                            |
-	+------+------+------+------+------+------+------+------+
-	| BatchStart                | IndexStart                |
-	+------+------+------+------+------+------+------+------+
-	| NumEntries                | CRC                       |
-	+------+------+------+------+------+------+------+------+
-
-*/
-
-type blockTrailer struct {
-	firstIndex uint64
-	batchStart uint32
-	indexStart uint32
-	numEntries uint32
-	crc        uint32
-}
-
-func writeBlockTrailer(buf []byte, t blockTrailer) error {
-	if len(buf) < blockTrailerLen {
-		return io.ErrShortBuffer
+	if (len(offsets) % 2) == 1 {
+		// Odd number of entries, zero pad to keep it 8-byte aligned
+		binary.LittleEndian.PutUint32(buf[cursor:], 0)
 	}
-	binary.LittleEndian.PutUint64(buf[0:8], t.firstIndex)
-	binary.LittleEndian.PutUint32(buf[8:12], t.batchStart)
-	binary.LittleEndian.PutUint32(buf[12:16], t.indexStart)
-	binary.LittleEndian.PutUint32(buf[16:20], t.numEntries)
-	binary.LittleEndian.PutUint32(buf[20:24], t.crc)
 	return nil
-}
-
-// readBlockTrailer from buffer. buffer is assumed to be the last N bytes of the
-// block _ending_ with a block trailer. It might be only the trailer but if it's
-// longer it's assumed the trailer is at the end. This allows readers to read a
-// chunk of the end of the block and then if the index is within that chunk they
-// don't need a second read.
-func readBlockTrailer(buf []byte) (blockTrailer, error) {
-	var t blockTrailer
-	if len(buf) < blockTrailerLen {
-		return t, io.ErrShortBuffer
-	}
-
-	trailerOffset := len(buf) - blockTrailerLen
-
-	t.firstIndex = binary.LittleEndian.Uint64(buf[trailerOffset : trailerOffset+8])
-	t.batchStart = binary.LittleEndian.Uint32(buf[trailerOffset+8 : trailerOffset+12])
-	t.indexStart = binary.LittleEndian.Uint32(buf[trailerOffset+12 : trailerOffset+16])
-	t.numEntries = binary.LittleEndian.Uint32(buf[trailerOffset+16 : trailerOffset+20])
-	t.crc = binary.LittleEndian.Uint32(buf[trailerOffset+20 : trailerOffset+24])
-	return t, nil
-}
-
-// nextBlockStart returns the offset at which the next block of blockSize starts
-// that is _strictly greater_ than offset. If offset is a block boundary already
-// it will return the next one.
-func nextBlockStart(blockSize, offset uint32) uint32 {
-	// There are sneaky ways to speed this up given than blockSize is a power of
-	// two but this is not performance critical!
-	return ((offset / blockSize) + 1) * blockSize
-}
-
-// blockIDFromOffset returns the blockID that the given offset falls inside
-func blockIDFromOffset(blockSize, offset uint32) uint32 {
-	return offset / blockSize
 }

@@ -37,12 +37,6 @@ func FileName(i wal.SegmentInfo) string {
 	return fmt.Sprintf(segmentFileNamePattern, i.BaseIndex, i.ID)
 }
 
-// PreallocatedSize calculates how big the file needs to be based on the
-// metadata.
-func PreallocatedSize(i wal.SegmentInfo) uint64 {
-	return uint64(i.BlockSize) * uint64(i.NumBlocks)
-}
-
 // Create adds a new segment with the given info and returns a writer or an
 // error.
 func (f *Filer) Create(info wal.SegmentInfo) (wal.SegmentWriter, error) {
@@ -51,7 +45,7 @@ func (f *Filer) Create(info wal.SegmentInfo) (wal.SegmentWriter, error) {
 	}
 	fname := FileName(info)
 
-	wf, err := f.vfs.Create(f.dir, fname, PreallocatedSize(info))
+	wf, err := f.vfs.Create(f.dir, fname, uint64(info.SizeLimit))
 	if err != nil {
 		return nil, err
 	}

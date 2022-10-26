@@ -5,6 +5,7 @@ package segment
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -19,11 +20,6 @@ func TestFileName(t *testing.T) {
 
 	fn = FileName(wal.SegmentInfo{BaseIndex: 7394872394732, ID: 0xab1234cd4567ef})
 	require.Equal(t, "00000007394872394732-00ab1234cd4567ef.wal", fn)
-}
-
-func TestPreallocatedSize(t *testing.T) {
-	s := PreallocatedSize(wal.SegmentInfo{BlockSize: 1024 * 1024, NumBlocks: 64})
-	require.Equal(t, 64*1024*1024, int(s))
 }
 
 func TestSegmentBasics(t *testing.T) {
@@ -62,33 +58,23 @@ func TestSegmentBasics(t *testing.T) {
 	require.Equal(t, []byte("one"), gotBs)
 
 	expectVals := append([]string{}, "one")
-	// OK, now write enough to fill up the block with a few more entries.
+	// OK, now write some more.
 	batch := make([]wal.LogEntry, 0, 10)
 	for idx := uint64(2); idx < 12; idx++ {
 		// Customize value  each time just to check we're really reading the right
 		// thing...
-		val := strings.Repeat(fmt.Sprintf("%03d ", idx), int(seg0.BlockSize/8)/4)
+		val := strings.Repeat(fmt.Sprintf("%03d ", idx), 128)
 		batch = append(batch, wal.LogEntry{Index: idx, Data: []byte(val)})
 		expectVals = append(expectVals, val)
 	}
 	require.NoError(t, w.Append(batch))
 
-	// then a 32KiB message which will split over multiple blocks and another
-	// short one which should end up sharing a block with the last fragment from
-	// before.
-	val12 := strings.Repeat(fmt.Sprintf("%03d ", 12), int(seg0.BlockSize*2)/4)
-	require.NoError(t, w.Append([]wal.LogEntry{
-		{Index: 12, Data: []byte(val12)},
-		{Index: 13, Data: []byte("thirteen")},
-	}))
-	expectVals = append(expectVals, val12, "thirteen")
-
 	// Peek at the whole "file"
-	t.Logf(file.Dump())
+	t.Logf("\n" + file.Dump())
 
 	// Now we should be able to read those all back sequentially through the
 	// writer, though some are in the tail block and some in complete blocks.
-	for idx := uint64(1); idx < 14; idx++ {
+	for idx := uint64(1); idx < 12; idx++ {
 		gotBs, err := w.GetLog(idx)
 		require.NoError(t, err, "failed reading idx=%d", idx)
 		require.Equal(t, expectVals[idx-1], string(gotBs), "bad value for idx=%d", idx)
@@ -103,41 +89,133 @@ func TestRecovery(t *testing.T) {
 		corrupt            func(*testWritableFile) error
 		wantErr            string
 		wantLastIndex      uint64
+		wantSealed         bool
+		wantIndexStart     uint64
 	}{
-		// {
-		// 	name:               "recover first block",
-		// 	numPreviousEntries: 0,
-		// 	// Recover a single entry append
-		// 	appendEntrySizes: []int{10},
-		// 	// no corruption (clean shutdown)
-		// 	wantLastIndex: 1,
-		// },
-		// {
-		// 	name: "recover second block",
-		// 	// should just fill block 0 and spill to block 1 so the whole append is in
-		// 	// block 1.
-		// 	numPreviousEntries: 5,
-		// 	// Recover a single entry append at start
-		// 	appendEntrySizes: []int{10},
-		// 	// no corruption (clean shutdown)
-		// 	wantLastIndex: 6,
-		// },
-		// {
-		// 	name: "recover across block boundary",
-		// 	// Half fill block 0
-		// 	numPreviousEntries: 2,
-		// 	// Recover an entry that is fragmented into block 1
-		// 	appendEntrySizes: []int{128},
-		// 	// no corruption (clean shutdown)
-		// 	wantLastIndex: 3,
-		// },
 		{
-			name:               "recover multi-block commit",
+			name:               "recover empty",
 			numPreviousEntries: 0,
-			// Recover an entry that is fragmented across multiple blocks
-			appendEntrySizes: []int{300},
+			appendEntrySizes:   []int{},
+			// no corruption (clean shutdown)
+			wantLastIndex: 0,
+		},
+		{
+			name:               "recover first batch",
+			numPreviousEntries: 0,
+			appendEntrySizes:   []int{10},
 			// no corruption (clean shutdown)
 			wantLastIndex: 1,
+		},
+		{
+			name:               "recover later batch",
+			numPreviousEntries: 10,
+			appendEntrySizes:   []int{10},
+			// no corruption (clean shutdown)
+			wantLastIndex: 11,
+		},
+		{
+			name:               "recover multi-entry batch",
+			numPreviousEntries: 10,
+			appendEntrySizes:   []int{10, 10, 10, 10},
+			// no corruption (clean shutdown)
+			wantLastIndex: 14,
+		},
+		{
+			name:               "missing end of commit",
+			numPreviousEntries: 10,
+			appendEntrySizes:   []int{10, 10, 10, 10},
+			corrupt: func(twf *testWritableFile) error {
+				// zero out just the very last commit frame
+				for i := twf.maxWritten - frameHeaderLen; i < twf.maxWritten; i++ {
+					twf.buf[i] = 0
+				}
+				return nil
+			},
+			// should recover back to before the append
+			wantLastIndex: 10,
+		},
+		{
+			name:               "partial initial commit",
+			numPreviousEntries: 0,
+			appendEntrySizes:   []int{10, 10, 10, 10},
+			corrupt: func(twf *testWritableFile) error {
+				// corrupt a byte in the last commit
+				twf.buf[fileHeaderLen+frameHeaderLen] = 127
+				return nil
+			},
+			// should recover back to before the append
+			wantLastIndex: 0,
+		},
+		{
+			name:               "torn write with some data in middle of commit missing",
+			numPreviousEntries: 10,
+			appendEntrySizes:   []int{10, 10, 10, 10},
+			corrupt: func(twf *testWritableFile) error {
+				// zero out one byte from somewhere near the start of the commit (but
+				// not in the frameheader)
+				twf.buf[twf.lastSyncStart+10] = 0
+				return nil
+			},
+			// should recover back to before the append
+			wantLastIndex: 10,
+		},
+		{
+			name:               "torn write with header in commit corrupt",
+			numPreviousEntries: 10,
+			appendEntrySizes:   []int{10, 10, 10, 10},
+			corrupt: func(twf *testWritableFile) error {
+				// We rely on knowing the sizes of the entries in this case which were
+				// header + 10 byte + 6 bytes padding each. We corrupt not the first but
+				// second header. We'll set the typ byte to an invalid value.
+				twf.buf[twf.lastSyncStart+encodedFrameSize(10)] = 65
+				return nil
+			},
+			// should recover back to before the append
+			wantLastIndex: 10,
+		},
+		{
+			name:               "empty file",
+			numPreviousEntries: 0,
+			appendEntrySizes:   []int{},
+			corrupt: func(twf *testWritableFile) error {
+				twf.buf = twf.buf[:0]
+				twf.dirty = false
+				twf.maxWritten = 0
+				return nil
+			},
+			// should throw an EOF error on recover as there is no file header to verify
+			wantErr: io.EOF.Error(),
+		},
+		{
+			name:               "bad segment header",
+			numPreviousEntries: 0,
+			appendEntrySizes:   []int{},
+			corrupt: func(twf *testWritableFile) error {
+				twf.buf[0] = 123 // twiddle the magic value
+				return nil
+			},
+			// should throw an EOF error on recover as there is no file header to verify
+			wantErr: "corrupt",
+		},
+		{
+			name:               "bad segment header BaseIndex",
+			numPreviousEntries: 0,
+			appendEntrySizes:   []int{},
+			corrupt: func(twf *testWritableFile) error {
+				twf.buf[8] = 123 // twiddle the base index
+				return nil
+			},
+			// should throw an EOF error on recover as there is no file header to verify
+			wantErr: "segment header BaseIndex 123 doesn't match metadata 1",
+		},
+		{
+			name:               "sealed tail",
+			numPreviousEntries: 0,
+			// SizeLimit is set to 4KiB write 5 1KiB values to force it to be sealed.
+			appendEntrySizes: []int{1024, 1024, 1024, 1024, 1024},
+			wantLastIndex:    5,
+			wantSealed:       true,
+			wantIndexStart:   1234, // Not sure how useful this is..
 		},
 	}
 
@@ -199,8 +277,22 @@ func TestRecovery(t *testing.T) {
 
 			require.Equal(t, int(tc.wantLastIndex), int(w.LastIndex()))
 
-			// Verify we can continue to append and then read back everything.
+			sealed, indexStart, err := w.Sealed()
+			require.NoError(t, err)
+
+			require.Equal(t, tc.wantSealed, sealed)
+			require.Equal(t, tc.wantIndexStart, indexStart)
+
 			lastIdx := w.LastIndex()
+			if tc.wantSealed {
+				// Appends should fail
+				err := w.Append([]wal.LogEntry{{Index: lastIdx, Data: []byte("bad")}})
+				require.ErrorContains(t, err, "foo")
+				return
+			}
+
+			// Verify we can continue to append and then read back everything.
+
 			for i := 0; i < 10; i++ {
 				// Append individually, could do commit batches but this is all in
 				// memory so no real benefit.
@@ -229,9 +321,8 @@ func testSegment(baseIndex uint64) wal.SegmentInfo {
 	return wal.SegmentInfo{
 		BaseIndex: baseIndex,
 		ID:        id,
-		BlockSize: 128,
-		NumBlocks: 64,
 		Codec:     wal.CodecBinaryV1,
+		SizeLimit: 4 * 1024, // Small limit to make it easier to test sealing
 		// Other fields don't really matter at segment level for now.
 	}
 }
