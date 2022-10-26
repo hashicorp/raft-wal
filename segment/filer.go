@@ -46,6 +46,9 @@ func PreallocatedSize(i wal.SegmentInfo) uint64 {
 // Create adds a new segment with the given info and returns a writer or an
 // error.
 func (f *Filer) Create(info wal.SegmentInfo) (wal.SegmentWriter, error) {
+	if info.BaseIndex == 0 {
+		return nil, fmt.Errorf("BaseIndex must be greater than zero")
+	}
 	fname := FileName(info)
 
 	wf, err := f.vfs.Create(f.dir, fname, PreallocatedSize(info))

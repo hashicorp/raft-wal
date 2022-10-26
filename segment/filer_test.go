@@ -31,7 +31,7 @@ func TestSegmentBasics(t *testing.T) {
 
 	f := NewFiler("test", vfs)
 
-	seg0 := testSegment(0)
+	seg0 := testSegment(1)
 
 	w, err := f.Create(seg0)
 	require.NoError(t, err)
@@ -104,11 +104,38 @@ func TestRecovery(t *testing.T) {
 		wantErr            string
 		wantLastIndex      uint64
 	}{
+		// {
+		// 	name:               "recover first block",
+		// 	numPreviousEntries: 0,
+		// 	// Recover a single entry append
+		// 	appendEntrySizes: []int{10},
+		// 	// no corruption (clean shutdown)
+		// 	wantLastIndex: 1,
+		// },
+		// {
+		// 	name: "recover second block",
+		// 	// should just fill block 0 and spill to block 1 so the whole append is in
+		// 	// block 1.
+		// 	numPreviousEntries: 5,
+		// 	// Recover a single entry append at start
+		// 	appendEntrySizes: []int{10},
+		// 	// no corruption (clean shutdown)
+		// 	wantLastIndex: 6,
+		// },
+		// {
+		// 	name: "recover across block boundary",
+		// 	// Half fill block 0
+		// 	numPreviousEntries: 2,
+		// 	// Recover an entry that is fragmented into block 1
+		// 	appendEntrySizes: []int{128},
+		// 	// no corruption (clean shutdown)
+		// 	wantLastIndex: 3,
+		// },
 		{
-			name:               "recover first block",
+			name:               "recover multi-block commit",
 			numPreviousEntries: 0,
-			// Recover a single entry append
-			appendEntrySizes: []int{10},
+			// Recover an entry that is fragmented across multiple blocks
+			appendEntrySizes: []int{300},
 			// no corruption (clean shutdown)
 			wantLastIndex: 1,
 		},
@@ -121,7 +148,7 @@ func TestRecovery(t *testing.T) {
 
 			f := NewFiler("test", vfs)
 
-			seg0 := testSegment(0)
+			seg0 := testSegment(1)
 
 			w, err := f.Create(seg0)
 			require.NoError(t, err)
@@ -132,7 +159,7 @@ func TestRecovery(t *testing.T) {
 			for i := 0; i < tc.numPreviousEntries; i++ {
 				// Append individually, could do commit batches but this is all in
 				// memory so no real benefit.
-				v := fmt.Sprintf("%05d: Some other bytes of data too.", i+1)
+				v := fmt.Sprintf("%05d: blah", i+1) // 11 bytes == 16 + 8 + 4 with overhead
 				err := w.Append([]wal.LogEntry{{Index: uint64(i + 1), Data: []byte(v)}})
 				require.NoError(t, err)
 			}
@@ -144,7 +171,7 @@ func TestRecovery(t *testing.T) {
 				if len < 6 {
 					panic("we need 6 bytes to encode the index for verification")
 				}
-				v := fmt.Sprintf("%05d:%s", i+1, strings.Repeat("P", len-6))
+				v := fmt.Sprintf("%05d:%s", idx, strings.Repeat("P", len-6))
 				batch = append(batch, wal.LogEntry{Index: uint64(idx), Data: []byte(v)})
 			}
 
@@ -168,6 +195,8 @@ func TestRecovery(t *testing.T) {
 			}
 			require.NoError(t, err)
 
+			t.Log("\n" + testFileFor(t, w).Dump())
+
 			require.Equal(t, int(tc.wantLastIndex), int(w.LastIndex()))
 
 			// Verify we can continue to append and then read back everything.
@@ -180,6 +209,8 @@ func TestRecovery(t *testing.T) {
 				err := w.Append([]wal.LogEntry{{Index: lastIdx, Data: []byte(v)}})
 				require.NoError(t, err)
 			}
+
+			t.Log("\n" + testFileFor(t, w).Dump())
 
 			// Read the whole log!
 			for idx := uint64(1); idx <= lastIdx; idx++ {
@@ -198,8 +229,8 @@ func testSegment(baseIndex uint64) wal.SegmentInfo {
 	return wal.SegmentInfo{
 		BaseIndex: baseIndex,
 		ID:        id,
-		BlockSize: 128, // 16KiB blocks for testing
-		NumBlocks: 64,  // 64 * 16KiB is 1MiB which seems plenty to test with in memory
+		BlockSize: 128,
+		NumBlocks: 64,
 		Codec:     wal.CodecBinaryV1,
 		// Other fields don't really matter at segment level for now.
 	}

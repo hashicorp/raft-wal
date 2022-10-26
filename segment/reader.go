@@ -223,7 +223,7 @@ func (r *Reader) findFrameOffset(idx uint64) (uint32, error) {
 	var bufStart int64
 	_, err := blockSearch(int(numCompleteBlocks), func(i int) (bool, bool, error) {
 		// Read block i's trailer
-		startedAt, t, err := r.readBlocktrailer(buf, i)
+		startedAt, t, err := r.readBlockTrailer(buf, i)
 		if err != nil {
 			return false, false, err
 		}
@@ -293,8 +293,8 @@ func (r *Reader) findFrameOffset(idx uint64) (uint32, error) {
 		// We can now decode directly into offset
 		offset = binary.LittleEndian.Uint32(buf[offsetFromIndexStart : offsetFromIndexStart+4])
 	} else {
-		// We didn't read whole index. We only need to both reading the 4 bytes and
-		// we know where they are!
+		// We didn't read whole index. We only need to bother reading the 4 bytes
+		// and we know where they are!
 		var bs [4]byte
 		if _, err := r.rf.ReadAt(bs[:], int64(foundTrailer.indexStart+uint32(offsetFromIndexStart))); err != nil {
 			return 0, err
@@ -306,7 +306,7 @@ func (r *Reader) findFrameOffset(idx uint64) (uint32, error) {
 	return offset, nil
 }
 
-func (r *Reader) readBlocktrailer(buf []byte, blockID int) (int64, *blockTrailer, error) {
+func (r *Reader) readBlockTrailer(buf []byte, blockID int) (int64, *blockTrailer, error) {
 	blockEnd := int64(blockID+1) * int64(r.info.BlockSize)
 
 	// Read the last len(buf) bytes from the block
@@ -383,7 +383,7 @@ func (r *Reader) findFirstPartialBlock() (uint32, error) {
 
 func (r *Reader) isBlockComplete(buf []byte, blockID uint32) (bool, error) {
 	// Read block i's trailer
-	_, t, err := r.readBlocktrailer(buf, int(blockID))
+	_, t, err := r.readBlockTrailer(buf, int(blockID))
 	if err == io.EOF {
 		// Treat EOF specially in this case. As noted above some file systems
 		// can't preallocate so the file might be shorter than the metadata makes

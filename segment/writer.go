@@ -152,6 +152,12 @@ func recoverFile(info wal.SegmentInfo, wf wal.WritableFile) (*Writer, error) {
 		return nil, err
 	}
 
+	// From this point forward, ensure that after recovery we attempt to set the
+	// tail block based on the tailIndex information we uncovered.
+	// attemptRecoverTail can't always do this correctly so we always do it in
+	// this one place instead.
+	defer w.completeRecovery()
+
 	if !discard && !partial {
 		// We recovered just fine!
 		return w, nil
@@ -163,13 +169,13 @@ func recoverFile(info wal.SegmentInfo, wf wal.WritableFile) (*Writer, error) {
 	// committed frames though so we can recover it to a good state.
 	for discard {
 		// Try again with the block before
-		tailBlockID--
-		if tailBlockID < 0 {
+		if tailBlockID == 0 {
 			// We got back to the start of the log. It's essentially empty. Initialize
 			// as an empty segment.
 			w.initEmpty()
 			return w, nil
 		}
+		tailBlockID--
 		discard, partial, err = w.attemptRecoverTail(tailBlockID, info.BlockSize)
 		if err != nil {
 			return nil, err
@@ -202,7 +208,7 @@ func recoverFile(info wal.SegmentInfo, wf wal.WritableFile) (*Writer, error) {
 	// blocks here to save fiddling with multiple reads.
 	buf := make([]byte, info.BlockSize)
 	lastCompleteBlockID := tailBlockID - 1
-	_, trailer, err := r.readBlocktrailer(buf, int(lastCompleteBlockID))
+	_, trailer, err := r.readBlockTrailer(buf, int(lastCompleteBlockID))
 	if err != nil {
 		return nil, err
 	}
@@ -219,11 +225,12 @@ func recoverFile(info wal.SegmentInfo, wf wal.WritableFile) (*Writer, error) {
 	// Assuming that was OK, walk through the other blocks we need too
 	bid := batchStartBlockID
 	for crcOK && bid < lastCompleteBlockID {
-		_, trailer, err := r.readBlocktrailer(buf, int(bid))
+		_, trailer, err := r.readBlockTrailer(buf, int(bid))
 		if err != nil {
 			return nil, err
 		}
 		crcOK = w.checkBlockCRC(buf, bid, trailer.crc, trailer.batchStart)
+		bid++
 	}
 
 	if crcOK {
@@ -257,6 +264,7 @@ func (w *Writer) initEmpty() {
 	// We just wrote the header to the file so the next write needs to go after
 	// that. Initialize the writeCursor.
 	w.writer.writeOffset = fileHeaderLen
+	w.writer.batchStart = fileHeaderLen
 
 	// Initialize the tail
 	tail := &tailIndex{
@@ -276,7 +284,7 @@ func (w *Writer) checkBlockCRC(buf []byte, blockID, wantCRC, batchStart uint32) 
 		// where we start reading to compare only the bytes written in that batch.
 		crcStartInBlock = batchStart - blockStart
 	}
-	gotCrc := crc32.Checksum(buf[crcStartInBlock:], castagnoliTable)
+	gotCrc := crc32.Checksum(buf[crcStartInBlock:len(buf)-4], castagnoliTable)
 	return wantCRC == gotCrc
 }
 
@@ -312,6 +320,9 @@ func (w *Writer) checkBlockCRC(buf []byte, blockID, wantCRC, batchStart uint32) 
 // where some part of the written data was missing. We should pretend that the
 // block is empty space after this point and only recover records up to maxLen.
 // If we want to use the whole block just pass maxLen as BlockSize.
+//
+// Note that w.commitIndex is never set by this method because it doesn't have
+// all the information it needs in some cases.
 func (w *Writer) attemptRecoverTail(blockID, maxLen uint32) (discard, partial bool, err error) {
 	blockStart := blockID * w.info.BlockSize
 	bufSize := w.info.BlockSize
@@ -344,7 +355,26 @@ func (w *Writer) attemptRecoverTail(blockID, maxLen uint32) (discard, partial bo
 		if err != nil {
 			return false, false, fmt.Errorf("failed to read last complete block's trail for block %d: %w", blockID-1, err)
 		}
-		firstIndex = trailer.firstIndex + uint64(trailer.numEntries)
+
+		// This one is really subtle, but we have slightly different invariants
+		// in-memory vs on disk for what "firstIndex" means on the tail block. On
+		// disk we know by the time we write out the trailer whether there were
+		// actually any new entries started in that block and so firstIndex on a
+		// block with no new entries in (only middle frames) will be the same as the
+		// block before. But in memory, in general we don't know until the end of
+		// the block whether firstIndex should be the same as the last entry of the
+		// block before or one higher so the steady state code maintains it as "the
+		// next indexable entry that would start in that block if there is one" and
+		// only corrects that at then end of the block. For this reason, if the
+		// previous block header we just read had zero indexable entries then we
+		// need to actually set firstIndex to the _next_ index to mirror the
+		// expectations of the in-memory code.
+		if trailer.numEntries == 0 {
+			firstIndex = trailer.firstIndex + 1
+		} else {
+			firstIndex = trailer.firstIndex + uint64(trailer.numEntries)
+		}
+
 		// reset buf back to just the block we want!
 		buf = buf[blockTrailerLen:]
 	}
@@ -370,11 +400,20 @@ func (w *Writer) attemptRecoverTail(blockID, maxLen uint32) (discard, partial bo
 		return true, false, nil
 	}
 
-	offset := uint32(0)=
-	var lastCommitHdr *frameHeader
-	lastCommitOffset := uint32(0)
-	lastCommitNumEntries := 0
-	indexSizeAtLastCommit := 0
+	// Work out where to start reading frames. Almost always at the start of the
+	// block unless it's the first one then we need to skip the file header.
+	offset := uint32(0)
+	if blockID == 0 {
+		offset = fileHeaderLen
+	}
+
+	type commitSummary struct {
+		hdr        frameHeader
+		offset     uint32
+		crcStart   uint32
+		numEntries int
+	}
+	var prevCommit, finalCommit *commitSummary
 	commitFrames := 0
 READ:
 	for offset < maxLen {
@@ -383,13 +422,14 @@ READ:
 			return false, false, fmt.Errorf("failed to read frame %d from tail block %d: %w", len(tail.offsets), blockID, err)
 		}
 		if fh.typ == FrameInvalid {
-			// Zero type byte indicates either incomplete writes or the end of written
-			// data (zeros). Either way we've read all we can recover.
+			// Zero type byte indicates either incomplete writes (i.e. a zero sector
+			// that didn't make it to disk though later ones might have) or the end of
+			// written data (zeros). Either way we've read all we can recover.
 			break READ
 		}
 
 		// Check we can actually read all the rest of the frame.
-		if (offset + frameHeaderLen + hdr.len) > maxLen {
+		if (offset + frameHeaderLen + fh.len) > maxLen {
 			// Shouldn't be possible - it's most likely a bug if we hit this. Could be
 			// arbitrary corruption but we don't attempt to handle that for now even
 			// if this is the uncommitted tail.
@@ -404,60 +444,123 @@ READ:
 			break READ
 
 		case fh.typ == FrameCommit:
+			summary := commitSummary{
+				hdr:        fh,
+				offset:     offset,
+				numEntries: len(tail.offsets),
+			}
+			if finalCommit != nil {
+				// We already saw at least one other commit frame. Copy it over.
+				prevCommit = finalCommit
+				summary.crcStart = prevCommit.offset + frameHeaderLen
+			} else if blockID == 0 {
+				// Crc start for the first commit frame is the start of the block unless
+				// it was block zero and there was a file header.
+				summary.crcStart = fileHeaderLen
+			}
+			finalCommit = &summary
 			commitFrames++
-			indexSizeAtLastCommit = len(tail.offsets)
-			lastCommitHdr = &fh
-			lastCommitOffset = offset
-			lastCommitNumEntries = len(tail.offsets)
 
 		case isIndexableFrame(fh):
-			tail.offsets = append(tail.offsets, offset)
+			tail.offsets = append(tail.offsets, blockStart+offset)
 		}
 
-		offset += encodedFrameSize(int(fh.len))
+		offset += uint32(encodedFrameSize(int(fh.len)))
 	}
 
 	// Did we find any commit frames? Implement the cases spelled out in the doc
 	// comment.
-	switch {
-	case commitFrames == 0:
+	if commitFrames == 0 {
 		// We didn't find any commits so all of the data here (if any) was part of
 		// an interrupted write and should be treated as empty space. It's not
 		// "partial" because that indicates that it's intact but not the whole write
 		// but this is not even intact within this block since this is meant to be
 		// the tail block.
 		return true, false, nil
-
-	case commitFrames == 1:
-		// Commit frames are just a header so move the write cursor to just after
-		// the last commit frame.
-		w.writer.writeOffset = lastCommitOffset+frameHeaderLen
-
-		// If we only found one commit frame, there are two possible outcomes:
-		//  1. If there were later frames _after_ that commit frame (but no other
-		//     commit frame) then we must have completed the commit frame's append
-		//     since we would never write another frame after a commit frame until
-		//     after fsync returned. That means, we can just truncate the partial
-		//     stuff and be confident we found committed tail - right after that
-		//     commit frame. We need to remove any indexes we added after though and
-		//     the cursor back to right after the commit frame.
-		//  2. If not, then we are done, but we know we've only seen the last part
-		//     of the last append batch so need to return partial == true to check
-		//     previous blocks too.
-		if lastCommitNumEntries < len(tail.offsets) {
-			// Case 1 from above, we have evidence that more data was written in a
-			// later append than the commit frame so it must have been fsynced.
-			// Truncate the uncommitted frames and we're done.
-			tail.offsets = tail.offsets[:lastCommitNumEntries]
-			return false, false, nil
-		}
-		// The last commit frame was the last frame in the block so we need to
-		// verify the whole commit made it to disk. We know that at least the
-		// previous block trailer was written in the same
-
-		// Return partial write.
-		return false, true, nil
 	}
+
+	// Commit frames are just a header so move the write cursor to just after the
+	// last commit frame. We'll move it again later if we find this commit was
+	// incomplete.
+	w.writer.writeOffset = blockStart + finalCommit.offset + frameHeaderLen
+
+	// In all other cases, any frames added _after_ the last commit frame in this
+	// tail (probably but not necessarily incomplete) segment can't be part of a
+	// valid commit so we truncate them out of the recovered index. BUT they do
+	// signal that the last commit frame's commit must have been persisted because
+	// we would not have appended further frames until fsync returned. So we know
+	// without validating anything else that everything up to that last commit
+	// frame must have made it through at least on fsync which is all we are
+	// trying to validate here.
+	if finalCommit.numEntries < len(tail.offsets) {
+		// Truncate the uncommitted frames and we're done.
+		tail.offsets = tail.offsets[:finalCommit.numEntries]
+		return false, false, nil
+	}
+
+	// So now we know that the last frame found is a commit frame. We need to
+	// determine whether that entire commit made it to disk (with or without
+	// fsync). We could be in either the 1 commitFrame case or the 2 or more case
+	// in the doc comment. Either way we have to CRC check all the data that was
+	// written to this block in that commit is present and correct.
+	gotCRC := crc32.Checksum(buf[finalCommit.crcStart:finalCommit.offset], castagnoliTable)
+
+	if gotCRC == finalCommit.hdr.entryLenOrCRC {
+		// CRC is OK so the last commit (or at least the part of it that was in this
+		// block) is all accounted for. We return discard=false. Partial is true if
+		// and only if we saw more than one commit and so the thing we CRCed was
+		// less than the entire block.
+		return false, commitFrames == 1, nil
+	}
+
+	// At this point the CRC check failed for the last commit. If this was the
+	// only commit frame in the block then the whole block is part of an
+	// incomplete write and needs to be discarded.
+	if commitFrames == 1 {
+		return true, false, nil
+	}
+
+	// Final case, there were multiple commits in this last block. The final one
+	// didn't validate CRC so we consider it incomplete or "torn". That means the
+	// _previous_ commit frame marks the true committed tail of the log. We need
+	// to recover index state back to _that_ frame and then we're done.
+	w.writer.writeOffset = blockStart + prevCommit.offset + frameHeaderLen
+	tail.offsets = tail.offsets[:prevCommit.numEntries]
+	return false, false, nil
+}
+
+// completeRecovery attempts to set internal state based on the recovered tail
+// (if there is one). It's called even when recovery fails so should not assume
+// a valid tail state.
+func (w *Writer) completeRecovery() {
+	tail := w.tail()
+	if tail == nil {
+		return
+	}
+
+	// Some verification that helps during testing. These invariants should never
+	// be broken.
+	start, end := w.tailBlockBounds()
+	if w.writer.writeOffset < start || w.writer.writeOffset > end {
+		panic("writeOffset is outside of tail block!")
+	}
+
+	// Make sure batchStart is set correctly
+	w.writer.batchStart = w.writer.writeOffset
+
+	// If we have zero entries and the tail is block 0 then there we can leave it
+	// at zero.
+	if tail.blockID == 0 && len(tail.offsets) == 0 {
+		return
+	}
+
+	// Otherwise it's the last entry in the tail block's index
+	commitIdx := tail.firstIndex + uint64(len(tail.offsets)) - 1
+
+	// Technically we don't need to access this atomically here since we're still
+	// recovering and there can't be any concurrent readers yet. But it's simpler
+	// to reason about if we just always do!
+	atomic.StoreUint64(&w.commitIdx, commitIdx)
 }
 
 // Close implements io.Closer
@@ -474,15 +577,14 @@ func (w *Writer) GetLog(idx uint64) ([]byte, error) {
 // durably stored otherwise raft's guarantees will be compromised.
 func (w *Writer) Append(entries []wal.LogEntry) error {
 	// Iterate entries and append each one
-	var crc uint32
 	for _, e := range entries {
-		if err := w.appendEntry(e, &crc); err != nil {
+		if err := w.appendEntry(e); err != nil {
 			return err
 		}
 	}
 
 	// Write the commit frame
-	if err := w.appendCommit(crc); err != nil {
+	if err := w.appendCommit(); err != nil {
 		return err
 	}
 
@@ -495,7 +597,7 @@ func (w *Writer) tail() *tailIndex {
 	return w.tailBlock.Load().(*tailIndex)
 }
 
-func (w *Writer) appendEntry(e wal.LogEntry, crc *uint32) error {
+func (w *Writer) appendEntry(e wal.LogEntry) error {
 
 	tail := w.tail()
 	if w.info.BaseIndex == 0 && tail.blockID == 0 && tail.firstIndex == 0 && len(tail.offsets) == 0 {
@@ -522,7 +624,10 @@ func (w *Writer) appendEntry(e wal.LogEntry, crc *uint32) error {
 	}
 }
 
-func (w *Writer) appendCommit(crc uint32) error {
+func (w *Writer) appendCommit() error {
+	// Calculate CRC over all the data in buffer so far. This is all data that was
+	// written to this block during this commit.
+	crc := crc32.Checksum(w.writer.commitBuf[:], castagnoliTable)
 	fh := frameHeader{
 		typ:           FrameCommit,
 		len:           0,
@@ -539,7 +644,14 @@ func (w *Writer) appendCommit(crc uint32) error {
 		return err
 	}
 	// Flush all writes to the current block
-	return w.sync()
+	if err := w.sync(); err != nil {
+		return err
+	}
+
+	// Finally, update batchStart so that by the time we write the next trailer
+	// we'll know where the append batch started.
+	w.writer.batchStart = w.writer.writeOffset
+	return nil
 }
 
 func (w *Writer) appendEntryFrame(data []byte, continuation bool) ([]byte, error) {
@@ -649,7 +761,7 @@ func (w *Writer) nextEntryFrame(data []byte, continuation bool) (*frameHeader, [
 }
 
 func (w *Writer) ensureBufCap(extraLen int) {
-	if cap(w.writer.commitBuf) < (len(w.writer.commitBuf) + extraLen) {
+	if cap(w.writer.commitBuf) < (cap(w.writer.commitBuf) + extraLen) {
 		// Grow the buffer, lets just double it to amortize cost
 		newSize := cap(w.writer.commitBuf) * 2
 		if newSize < minBufSize {
@@ -658,7 +770,7 @@ func (w *Writer) ensureBufCap(extraLen int) {
 		newBuf := make([]byte, minBufSize)
 		oldLen := len(w.writer.commitBuf)
 		copy(newBuf, w.writer.commitBuf)
-		w.writer.commitBuf = newBuf[0:oldLen]
+		w.writer.commitBuf = newBuf[:oldLen]
 	}
 }
 
@@ -737,14 +849,32 @@ func (w *Writer) finishBlock() error {
 	}
 	bufOffset += int(padBytes)
 
+	// Work out the correct firstIndex. We set it up presuming there would be at
+	// least one indexable entry, but if there wasn't we should subtract one.
+	firstIdx := tail.firstIndex
+	if firstIdx > 0 && idxFrameLen == 0 {
+		// No indexable entries so the last index of the last block was the right
+		// value.
+		firstIdx--
+	}
+
 	// Encode trailer
 	t := blockTrailer{
-		firstIndex: tail.firstIndex,
+		firstIndex: firstIdx,
 		batchStart: w.writer.batchStart,
 		indexStart: indexStart,
 		numEntries: uint32(len(tail.offsets)),
-		// TODO CRC
+		// We update CRC after writing trailer since it covers the trailer too.
 	}
+	if err := writeBlockTrailer(w.writer.commitBuf[bufOffset:], t); err != nil {
+		return err
+	}
+
+	// Checksum over all data written to this block in the current append batch
+	// (i.e. whole buffer) minus the last 4 bytes which are where the checksum is
+	// stored.
+	crc := crc32.Checksum(w.writer.commitBuf[0:len(w.writer.commitBuf)-4], castagnoliTable)
+	t.crc = crc
 	if err := writeBlockTrailer(w.writer.commitBuf[bufOffset:], t); err != nil {
 		return err
 	}

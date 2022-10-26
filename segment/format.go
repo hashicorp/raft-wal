@@ -4,8 +4,10 @@
 package segment
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/hashicorp/go-wal"
@@ -186,6 +188,8 @@ func writeFrameHeader(buf []byte, h frameHeader) error {
 	return nil
 }
 
+var zeroHeader [frameHeaderLen]byte
+
 func readFrameHeader(buf []byte) (frameHeader, error) {
 	var h frameHeader
 	if len(buf) < frameHeaderLen {
@@ -194,7 +198,17 @@ func readFrameHeader(buf []byte) (frameHeader, error) {
 
 	switch buf[0] {
 	default:
-		return h, wal.ErrCorrupt
+		return h, fmt.Errorf("%w: corrupt frame header with unknown type %d", wal.ErrCorrupt, buf[0])
+
+	case FrameInvalid:
+		// Check if the whole header is zero and return a zero frame as this could
+		// just indicate we've read right off the end of the written data during
+		// recovery.
+		if bytes.Equal(buf[:frameHeaderLen], zeroHeader[:]) {
+			return h, nil
+		}
+		return h, fmt.Errorf("%w: corrupt frame header with type 0 but non-zero other fields", wal.ErrCorrupt)
+
 	case FrameFull, FrameFirst, FrameMiddle, FrameLast, FrameIndex, FrameCommit:
 		h.typ = buf[0]
 	}
