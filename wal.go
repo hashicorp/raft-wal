@@ -25,6 +25,7 @@ var (
 
 	ErrNotFound = errors.New("Log entry not found")
 	ErrCorrupt  = errors.New("WAL is corrupt")
+	ErrSealed   = errors.New("Segment is sealed")
 )
 
 // WAL is a write-ahead log suitable for github.com/hashicorp/raft.

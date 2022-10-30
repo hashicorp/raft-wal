@@ -105,7 +105,7 @@ func (r *Reader) findFrameOffset(idx uint64) (uint32, error) {
 		return 0, fmt.Errorf("sealed segment has no index block")
 	}
 
-	if idx < r.info.MinIndex {
+	if idx < r.info.MinIndex || (r.info.MaxIndex > 0 && idx > r.info.MaxIndex) {
 		return 0, wal.ErrNotFound
 	}
 

@@ -287,6 +287,10 @@ func (w *Writer) Append(entries []wal.LogEntry) error {
 		return nil
 	}
 
+	if w.writer.indexStart > 0 {
+		return wal.ErrSealed
+	}
+
 	// Iterate entries and append each one
 	for _, e := range entries {
 		if err := w.appendEntry(e); err != nil {
@@ -296,9 +300,11 @@ func (w *Writer) Append(entries []wal.LogEntry) error {
 
 	ofs := w.getOffsets()
 	// Work out if we need to seal before we commit and sync.
-	if (w.writer.writeOffset + uint32(indexFrameSize(len(ofs)))) > w.info.SizeLimit {
-		// Seal the segment!
-		// TODO
+	if (w.writer.writeOffset + uint32(len(w.writer.commitBuf)+indexFrameSize(len(ofs)))) > w.info.SizeLimit {
+		// Seal the segment! We seal it by writing an index frame before we commit.
+		if err := w.appendIndex(); err != nil {
+			return err
+		}
 	}
 
 	// Write the commit frame
@@ -356,17 +362,40 @@ func (w *Writer) appendCommit() error {
 }
 
 func (w *Writer) ensureBufCap(extraLen int) {
-	if cap(w.writer.commitBuf) < (cap(w.writer.commitBuf) + extraLen) {
+	if cap(w.writer.commitBuf) < (len(w.writer.commitBuf) + extraLen) {
 		// Grow the buffer, lets just double it to amortize cost
 		newSize := cap(w.writer.commitBuf) * 2
 		if newSize < minBufSize {
 			newSize = minBufSize
 		}
-		newBuf := make([]byte, minBufSize)
+		newBuf := make([]byte, newSize)
 		oldLen := len(w.writer.commitBuf)
 		copy(newBuf, w.writer.commitBuf)
 		w.writer.commitBuf = newBuf[:oldLen]
 	}
+}
+
+func (w *Writer) appendIndex() error {
+	// Append the index record before we commit (commit and flush happen later
+	// generally)
+	offsets := w.getOffsets()
+	l := indexFrameSize(len(offsets))
+	w.ensureBufCap(l)
+
+	startOff := len(w.writer.commitBuf)
+
+	if err := writeIndexFrame(w.writer.commitBuf[startOff:startOff+l], offsets); err != nil {
+		return err
+	}
+	w.writer.commitBuf = w.writer.commitBuf[:startOff+l]
+
+	// Update crc with those values
+	w.writer.crc = crc32.Update(w.writer.crc, castagnoliTable, w.writer.commitBuf[startOff:startOff+l])
+
+	// Record the file offset where the index starts (the actual index data so
+	// after the frame header).
+	w.writer.indexStart = uint64(w.writer.writeOffset) + uint64(startOff+frameHeaderLen)
+	return nil
 }
 
 // appendFrame appends the given frame to the current block. The frame must fit

@@ -79,6 +79,12 @@ func TestSegmentBasics(t *testing.T) {
 		require.NoError(t, err, "failed reading idx=%d", idx)
 		require.Equal(t, expectVals[idx-1], string(gotBs), "bad value for idx=%d", idx)
 	}
+
+	// We just wrote enough data to ensure the segment was sealed.
+	sealed, indexStart, err := w.Sealed()
+	require.NoError(t, err)
+	require.True(t, sealed)
+	require.Greater(t, int(indexStart), 1)
 }
 
 func TestRecovery(t *testing.T) {
@@ -90,7 +96,6 @@ func TestRecovery(t *testing.T) {
 		wantErr            string
 		wantLastIndex      uint64
 		wantSealed         bool
-		wantIndexStart     uint64
 	}{
 		{
 			name:               "recover empty",
@@ -214,9 +219,13 @@ func TestRecovery(t *testing.T) {
 			// SizeLimit is set to 4KiB write 5 1KiB values to force it to be sealed.
 			appendEntrySizes: []int{1024, 1024, 1024, 1024, 1024},
 			wantLastIndex:    5,
-			wantSealed:       true,
-			wantIndexStart:   1234, // Not sure how useful this is..
+			// After recovery we should find it is already sealed.
+			wantSealed: true,
+			// Note that we'll implicitly test we can read all the indexes. Through
+			// the reader after recovery. That's a different path to reading frm the
+			// on-disk index though which is tested in reader_test.go
 		},
+		// TODO values larger than minBufSize
 	}
 
 	for _, tc := range cases {
@@ -281,25 +290,26 @@ func TestRecovery(t *testing.T) {
 			require.NoError(t, err)
 
 			require.Equal(t, tc.wantSealed, sealed)
-			require.Equal(t, tc.wantIndexStart, indexStart)
+			if tc.wantSealed {
+				require.Greater(t, int(indexStart), 1)
+			}
 
 			lastIdx := w.LastIndex()
 			if tc.wantSealed {
 				// Appends should fail
 				err := w.Append([]wal.LogEntry{{Index: lastIdx, Data: []byte("bad")}})
-				require.ErrorContains(t, err, "foo")
+				require.ErrorContains(t, err, "sealed")
 				return
-			}
-
-			// Verify we can continue to append and then read back everything.
-
-			for i := 0; i < 10; i++ {
-				// Append individually, could do commit batches but this is all in
-				// memory so no real benefit.
-				lastIdx++
-				v := fmt.Sprintf("%05d: Some other bytes of data too.", lastIdx)
-				err := w.Append([]wal.LogEntry{{Index: lastIdx, Data: []byte(v)}})
-				require.NoError(t, err)
+			} else {
+				// Verify we can continue to append and then read back everything.
+				for i := 0; i < 10; i++ {
+					// Append individually, could do commit batches but this is all in
+					// memory so no real benefit.
+					lastIdx++
+					v := fmt.Sprintf("%05d: Some other bytes of data too.", lastIdx)
+					err := w.Append([]wal.LogEntry{{Index: lastIdx, Data: []byte(v)}})
+					require.NoError(t, err)
+				}
 			}
 
 			t.Log("\n" + testFileFor(t, w).Dump())
@@ -310,6 +320,132 @@ func TestRecovery(t *testing.T) {
 				require.NoError(t, err, "failed reading idx=%d", idx)
 				require.True(t, strings.HasPrefix(string(gotBs), fmt.Sprintf("%05d:", idx)), "bad value for idx=%d", idx)
 			}
+		})
+	}
+}
+
+func TestListAndDelete(t *testing.T) {
+	vfs := newTestVFS()
+
+	f := NewFiler("test", vfs)
+
+	// Create 5 sealed segments
+	idx := uint64(1)
+	expectFiles := make(map[uint64]uint64)
+	var lastSealedID uint64
+	for i := 0; i < 5; i++ {
+		seg := testSegment(idx)
+		w, err := f.Create(seg)
+		require.NoError(t, err)
+
+		expectFiles[seg.ID] = seg.BaseIndex
+		lastSealedID = seg.ID
+
+		var sealed bool
+		for sealed == false {
+			val := fmt.Sprintf("%05d. Some Value.", idx)
+			err = w.Append([]wal.LogEntry{{Index: idx, Data: []byte(val)}})
+			require.NoError(t, err)
+
+			sealed, _, err = w.Sealed()
+			require.NoError(t, err)
+			idx++
+		}
+		w.Close()
+	}
+
+	// And one tail
+	seg := testSegment(idx)
+	w, err := f.Create(seg)
+	require.NoError(t, err)
+	w.Close()
+	expectFiles[seg.ID] = seg.BaseIndex
+
+	// Now list should have all the segments.
+	list, err := f.List()
+	require.NoError(t, err)
+
+	require.Equal(t, expectFiles, list)
+
+	// Now delete the tail file and the last segment
+	err = f.Delete(seg.BaseIndex, seg.ID)
+	require.NoError(t, err)
+
+	err = f.Delete(expectFiles[lastSealedID], lastSealedID)
+	require.NoError(t, err)
+
+	delete(expectFiles, seg.ID)
+	delete(expectFiles, lastSealedID)
+
+	// List should be updated
+	list, err = f.List()
+	require.NoError(t, err)
+}
+
+func TestListEdgeCases(t *testing.T) {
+	cases := []struct {
+		name      string
+		files     []string
+		wantErr   string
+		wantFiles map[uint64]uint64
+	}{
+		{
+			name:      "empty dir",
+			wantFiles: map[uint64]uint64{},
+		},
+		{
+			name:  "single tail",
+			files: []string{"00000000001-00000000001.wal"},
+			wantFiles: map[uint64]uint64{
+				1: 1,
+			},
+		},
+		{
+			name: "other random files",
+			files: []string{
+				"00000000001-00000000001.wal",
+				"blah.txt",
+			},
+			wantFiles: map[uint64]uint64{
+				1: 1,
+			},
+		},
+		{
+			name: "badly formed wal segments",
+			files: []string{
+				"0000000000100000000001.wal",
+			},
+			wantErr: "corrupt",
+		},
+		{
+			name: "badly formed wal segments",
+			files: []string{
+				"00000000001-zxcv.wal",
+			},
+			wantErr: "corrupt",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			vfs := newTestVFS()
+
+			for _, fname := range tc.files {
+				_, err := vfs.Create("test", fname, 128)
+				require.NoError(t, err)
+			}
+
+			f := NewFiler("test", vfs)
+
+			list, err := f.List()
+
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.wantFiles, list)
 		})
 	}
 }

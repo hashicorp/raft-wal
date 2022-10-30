@@ -66,6 +66,45 @@ func TestFileHeaderCodec(t *testing.T) {
 			},
 			wantReadErr: "corrupt",
 		},
+		{
+			name: "bad BaseIndex reading",
+			info: wal.SegmentInfo{
+				BaseIndex: 1234,
+				ID:        4321,
+				Codec:     wal.CodecBinaryV1,
+			},
+			corrupt: func(buf []byte) []byte {
+				buf[8] = 0xff
+				return buf
+			},
+			wantReadErr: "corrupt",
+		},
+		{
+			name: "bad ID reading",
+			info: wal.SegmentInfo{
+				BaseIndex: 1234,
+				ID:        4321,
+				Codec:     wal.CodecBinaryV1,
+			},
+			corrupt: func(buf []byte) []byte {
+				buf[16] = 0xff
+				return buf
+			},
+			wantReadErr: "corrupt",
+		},
+		{
+			name: "bad Codec reading",
+			info: wal.SegmentInfo{
+				BaseIndex: 1234,
+				ID:        4321,
+				Codec:     wal.CodecBinaryV1,
+			},
+			corrupt: func(buf []byte) []byte {
+				buf[24] = 0xff
+				return buf
+			},
+			wantReadErr: "corrupt",
+		},
 	}
 
 	for _, tc := range cases {
@@ -89,15 +128,12 @@ func TestFileHeaderCodec(t *testing.T) {
 				buf = tc.corrupt(buf)
 			}
 
-			got, err := readFileHeader(buf)
+			err = validateFileHeader(buf, tc.info)
 			if tc.wantReadErr != "" {
 				require.ErrorContains(t, err, tc.wantReadErr)
 				return
 			}
 			require.NoError(t, err)
-			require.NotNil(t, got)
-
-			require.Equal(t, tc.info, *got)
 		})
 	}
 }

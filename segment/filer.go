@@ -100,7 +100,7 @@ func (f *Filer) List() (map[uint64]uint64, error) {
 		var bIdx, id uint64
 		n, err := fmt.Sscanf(file, segmentFileNamePattern, &bIdx, &id)
 		if err != nil {
-			return nil, err
+			return nil, wal.ErrCorrupt
 		}
 		if n != 2 {
 			// Misnamed segment files with the right suffix indicates a bug or
