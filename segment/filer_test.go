@@ -10,15 +10,15 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/hashicorp/go-wal"
+	"github.com/hashicorp/raft-wal/types"
 	"github.com/stretchr/testify/require"
 )
 
 func TestFileName(t *testing.T) {
-	fn := FileName(wal.SegmentInfo{BaseIndex: 0, ID: 1})
+	fn := FileName(types.SegmentInfo{BaseIndex: 0, ID: 1})
 	require.Equal(t, "00000000000000000000-0000000000000001.wal", fn)
 
-	fn = FileName(wal.SegmentInfo{BaseIndex: 7394872394732, ID: 0xab1234cd4567ef})
+	fn = FileName(types.SegmentInfo{BaseIndex: 7394872394732, ID: 0xab1234cd4567ef})
 	require.Equal(t, "00000007394872394732-00ab1234cd4567ef.wal", fn)
 }
 
@@ -44,7 +44,7 @@ func TestSegmentBasics(t *testing.T) {
 	r.Close() // Done with this for now.
 
 	// Append to writer
-	err = w.Append([]wal.LogEntry{{Index: 1, Data: []byte("one")}})
+	err = w.Append([]types.LogEntry{{Index: 1, Data: []byte("one")}})
 	require.NoError(t, err)
 
 	// Should have been "fsynced"
@@ -59,12 +59,12 @@ func TestSegmentBasics(t *testing.T) {
 
 	expectVals := append([]string{}, "one")
 	// OK, now write some more.
-	batch := make([]wal.LogEntry, 0, 10)
+	batch := make([]types.LogEntry, 0, 10)
 	for idx := uint64(2); idx < 12; idx++ {
 		// Customize value  each time just to check we're really reading the right
 		// thing...
 		val := strings.Repeat(fmt.Sprintf("%03d ", idx), 128)
-		batch = append(batch, wal.LogEntry{Index: idx, Data: []byte(val)})
+		batch = append(batch, types.LogEntry{Index: idx, Data: []byte(val)})
 		expectVals = append(expectVals, val)
 	}
 	require.NoError(t, w.Append(batch))
@@ -247,19 +247,19 @@ func TestRecovery(t *testing.T) {
 				// Append individually, could do commit batches but this is all in
 				// memory so no real benefit.
 				v := fmt.Sprintf("%05d: blah", i+1) // 11 bytes == 16 + 8 + 4 with overhead
-				err := w.Append([]wal.LogEntry{{Index: uint64(i + 1), Data: []byte(v)}})
+				err := w.Append([]types.LogEntry{{Index: uint64(i + 1), Data: []byte(v)}})
 				require.NoError(t, err)
 			}
 
 			// Now create a batch with the entries sized as in the test case
-			batch := make([]wal.LogEntry, 0, len(tc.appendEntrySizes))
+			batch := make([]types.LogEntry, 0, len(tc.appendEntrySizes))
 			for i, len := range tc.appendEntrySizes {
 				idx := 1 + tc.numPreviousEntries + i
 				if len < 6 {
 					panic("we need 6 bytes to encode the index for verification")
 				}
 				v := fmt.Sprintf("%05d:%s", idx, strings.Repeat("P", len-6))
-				batch = append(batch, wal.LogEntry{Index: uint64(idx), Data: []byte(v)})
+				batch = append(batch, types.LogEntry{Index: uint64(idx), Data: []byte(v)})
 			}
 
 			err = w.Append(batch)
@@ -297,7 +297,7 @@ func TestRecovery(t *testing.T) {
 			lastIdx := w.LastIndex()
 			if tc.wantSealed {
 				// Appends should fail
-				err := w.Append([]wal.LogEntry{{Index: lastIdx, Data: []byte("bad")}})
+				err := w.Append([]types.LogEntry{{Index: lastIdx, Data: []byte("bad")}})
 				require.ErrorContains(t, err, "sealed")
 				return
 			} else {
@@ -307,7 +307,7 @@ func TestRecovery(t *testing.T) {
 					// memory so no real benefit.
 					lastIdx++
 					v := fmt.Sprintf("%05d: Some other bytes of data too.", lastIdx)
-					err := w.Append([]wal.LogEntry{{Index: lastIdx, Data: []byte(v)}})
+					err := w.Append([]types.LogEntry{{Index: lastIdx, Data: []byte(v)}})
 					require.NoError(t, err)
 				}
 			}
@@ -344,7 +344,7 @@ func TestListAndDelete(t *testing.T) {
 		var sealed bool
 		for sealed == false {
 			val := fmt.Sprintf("%05d. Some Value.", idx)
-			err = w.Append([]wal.LogEntry{{Index: idx, Data: []byte(val)}})
+			err = w.Append([]types.LogEntry{{Index: idx, Data: []byte(val)}})
 			require.NoError(t, err)
 
 			sealed, _, err = w.Sealed()
@@ -452,12 +452,12 @@ func TestListEdgeCases(t *testing.T) {
 
 var nextSegID uint64
 
-func testSegment(baseIndex uint64) wal.SegmentInfo {
+func testSegment(baseIndex uint64) types.SegmentInfo {
 	id := atomic.AddUint64(&nextSegID, 1)
-	return wal.SegmentInfo{
+	return types.SegmentInfo{
 		BaseIndex: baseIndex,
 		ID:        id,
-		Codec:     wal.CodecBinaryV1,
+		Codec:     1,
 		SizeLimit: 4 * 1024, // Small limit to make it easier to test sealing
 		// Other fields don't really matter at segment level for now.
 	}

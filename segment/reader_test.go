@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hashicorp/go-wal"
+	"github.com/hashicorp/raft-wal/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -70,7 +70,7 @@ func TestReader(t *testing.T) {
 				padding := strings.Repeat("P", padLen)
 				for i := 0; i < desc.num; i++ {
 					v := fmt.Sprintf("%05d:%s", idx, padding)
-					err := w.Append([]wal.LogEntry{{Index: idx, Data: []byte(v)}})
+					err := w.Append([]types.LogEntry{{Index: idx, Data: []byte(v)}})
 					require.NoError(t, err, "error appending entry idx=%d", idx)
 					idx++
 				}
@@ -104,10 +104,10 @@ func TestReader(t *testing.T) {
 			// And we should _not_ read one either side
 			if tc.firstIndex > 1 {
 				_, err := r.GetLog(tc.firstIndex - 1)
-				require.ErrorIs(t, err, wal.ErrNotFound)
+				require.ErrorIs(t, err, types.ErrNotFound)
 			}
 			_, err = r.GetLog(tc.wantLastIndex + 1)
-			require.ErrorIs(t, err, wal.ErrNotFound)
+			require.ErrorIs(t, err, types.ErrNotFound)
 		})
 	}
 }

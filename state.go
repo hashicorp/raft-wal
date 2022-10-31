@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/benbjohnson/immutable"
+	"github.com/hashicorp/raft-wal/types"
 )
 
 // state is an immutable snapshot of the state of the log. Modifications must be
@@ -29,17 +30,24 @@ type state struct {
 	finalizer atomic.Value
 
 	nextSegmentID uint64
-	segments      *immutable.SortedMap[uint64, SegmentInfo]
-	tail          SegmentWriter
+	segments      *immutable.SortedMap[uint64, segmentState]
+	tail          types.SegmentWriter
+}
+
+type segmentState struct {
+	types.SegmentInfo
+
+	// r is the SegmentReader for our in-memory state.
+	r types.SegmentReader
 }
 
 // Commit converts the in-memory state into a PersistentState.
 func (s *state) Persistent() PersistentState {
-	segs := make([]SegmentInfo, 0, s.segments.Len())
+	segs := make([]types.SegmentInfo, 0, s.segments.Len())
 	it := s.segments.Iterator()
 	for !it.Done() {
 		_, s, _ := it.Next()
-		segs = append(segs, s)
+		segs = append(segs, s.SegmentInfo)
 	}
 	return PersistentState{
 		NextSegmentID: s.nextSegmentID,
@@ -77,7 +85,7 @@ func (s *state) getLog(index uint64) ([]byte, error) {
 // called after already checking with the tail writer whether the log is in
 // there which means the caller can be sure it's not going to return the tail
 // segment.
-func (s *state) findSegmentReader(idx uint64) (SegmentReader, error) {
+func (s *state) findSegmentReader(idx uint64) (types.SegmentReader, error) {
 
 	if s.segments.Len() == 0 {
 		return nil, ErrNotFound
@@ -107,7 +115,7 @@ func (s *state) findSegmentReader(idx uint64) (SegmentReader, error) {
 	return nil, ErrNotFound
 }
 
-func (s *state) getTailInfo() *SegmentInfo {
+func (s *state) getTailInfo() *segmentState {
 	it := s.segments.Iterator()
 	it.Last()
 	_, tail, ok := it.Next()
@@ -117,7 +125,7 @@ func (s *state) getTailInfo() *SegmentInfo {
 	return &tail
 }
 
-func (s *state) append(entries []LogEntry) error {
+func (s *state) append(entries []types.LogEntry) error {
 	return s.tail.Append(entries)
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/alecthomas/atomic"
 	"github.com/benbjohnson/immutable"
 	"github.com/hashicorp/raft"
+	"github.com/hashicorp/raft-wal/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -99,7 +100,7 @@ func makeTestSegment(baseIndex uint64) *testSegment {
 		limit: 100,
 	}
 
-	info := SegmentInfo{
+	info := types.SegmentInfo{
 		BaseIndex:  baseIndex,
 		ID:         baseIndex, // for now just use 1:1 baseIndex and ID
 		MinIndex:   baseIndex,
@@ -109,7 +110,7 @@ func makeTestSegment(baseIndex uint64) *testSegment {
 
 	ts.s.Store(testSegmentState{
 		info: info,
-		logs: &immutable.SortedMap[uint64, LogEntry]{},
+		logs: &immutable.SortedMap[uint64, types.LogEntry]{},
 	})
 	return ts
 }
@@ -131,9 +132,9 @@ func stableInt(key string, val uint64) testStorageOpt {
 	}
 }
 
-func makeLogEntries(startIdx uint64, num int) []LogEntry {
+func makeLogEntries(startIdx uint64, num int) []types.LogEntry {
 	codec := &BinaryCodec{}
-	entries := make([]LogEntry, 0, num)
+	entries := make([]types.LogEntry, 0, num)
 	for _, log := range makeRaftLogs(startIdx, num) {
 		// Allocate a new buffer every time otherwise we end up returning slices to
 		// the same underlying buffer that is mutated in the next iteration.
@@ -143,7 +144,7 @@ func makeLogEntries(startIdx uint64, num int) []LogEntry {
 		}
 		// need to copy the buffer since the next iteration may mutate the same
 		// underlying byteslice returned by Bytes
-		entries = append(entries, LogEntry{
+		entries = append(entries, types.LogEntry{
 			Index: log.Index,
 			Data:  buf.Bytes(),
 		})
@@ -295,7 +296,7 @@ func (ts *testStorage) CommitState(ps PersistentState) error {
 	ts.metaState = ps
 
 	// For the sake of not being super confusing, lets also update all the
-	// SegmentInfos in the testSegments e.g. if Min/Max were set due to a
+	//types.SegmentInfos in the testSegments e.g. if Min/Max were set due to a
 	// truncation or the segment was sealed.
 	for _, seg := range ps.Segments {
 		ts, ok := ts.segments[seg.ID]
@@ -333,7 +334,7 @@ func (ts *testStorage) SetStable(key []byte, value []byte) error {
 }
 
 // Create implements segmentFiler
-func (ts *testStorage) Create(info SegmentInfo) (SegmentWriter, error) {
+func (ts *testStorage) Create(info types.SegmentInfo) (types.SegmentWriter, error) {
 	ts.recordCall("Create")
 	_, ok := ts.segments[info.ID]
 	if ok {
@@ -344,14 +345,14 @@ func (ts *testStorage) Create(info SegmentInfo) (SegmentWriter, error) {
 	}
 	sw.s.Store(testSegmentState{
 		info: info,
-		logs: &immutable.SortedMap[uint64, LogEntry]{},
+		logs: &immutable.SortedMap[uint64, types.LogEntry]{},
 	})
 	ts.segments[info.ID] = sw
 	return sw, ts.createErr
 }
 
 // RecoverTail implements segmentFiler
-func (ts *testStorage) RecoverTail(info SegmentInfo) (SegmentWriter, error) {
+func (ts *testStorage) RecoverTail(info types.SegmentInfo) (types.SegmentWriter, error) {
 	ts.recordCall("RecoverTail")
 	// Safety checks
 	sw, ok := ts.segments[info.ID]
@@ -366,7 +367,7 @@ func (ts *testStorage) RecoverTail(info SegmentInfo) (SegmentWriter, error) {
 }
 
 // Open implements segmentFiler
-func (ts *testStorage) Open(info SegmentInfo) (SegmentReader, error) {
+func (ts *testStorage) Open(info types.SegmentInfo) (types.SegmentReader, error) {
 	ts.recordCall("Open")
 	sw, ok := ts.segments[info.ID]
 	if !ok {
@@ -431,8 +432,8 @@ type testSegment struct {
 }
 
 type testSegmentState struct {
-	info   SegmentInfo
-	logs   *immutable.SortedMap[uint64, LogEntry]
+	info   types.SegmentInfo
+	logs   *immutable.SortedMap[uint64, types.LogEntry]
 	closed bool
 }
 
@@ -459,7 +460,7 @@ func (s *testSegment) GetLog(idx uint64) ([]byte, error) {
 	return log.Data, nil
 }
 
-func (s *testSegment) Append(entries []LogEntry) error {
+func (s *testSegment) Append(entries []types.LogEntry) error {
 	return s.mutate(func(newState *testSegmentState) error {
 		if newState.closed {
 			return errors.New("closed")
@@ -498,7 +499,7 @@ func (s *testSegment) closed() bool {
 	return state.closed
 }
 
-func (s *testSegment) info() SegmentInfo {
+func (s *testSegment) info() types.SegmentInfo {
 	state := s.s.Load()
 	return state.info
 }

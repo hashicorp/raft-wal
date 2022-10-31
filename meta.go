@@ -3,6 +3,8 @@
 
 package wal
 
+import "github.com/hashicorp/raft-wal/types"
+
 // MetaStore is the interface we need to some persistent, crash safe backend. We
 // implement it with BoltDB for real usage but the interface allows alternatives
 // to be used, or tests to mock out FS access.
@@ -33,5 +35,5 @@ type MetaStore interface {
 // recover on restart.
 type PersistentState struct {
 	NextSegmentID uint64
-	Segments      []SegmentInfo
+	Segments      []types.SegmentInfo
 }

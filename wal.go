@@ -6,7 +6,6 @@ package wal
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -17,22 +16,25 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
+	"github.com/hashicorp/raft-wal/fs"
+	"github.com/hashicorp/raft-wal/segment"
+	"github.com/hashicorp/raft-wal/types"
 )
 
 var (
 	_ raft.LogStore    = &WAL{}
 	_ raft.StableStore = &WAL{}
 
-	ErrNotFound = errors.New("Log entry not found")
-	ErrCorrupt  = errors.New("WAL is corrupt")
-	ErrSealed   = errors.New("Segment is sealed")
+	ErrNotFound = types.ErrNotFound
+	ErrCorrupt  = types.ErrCorrupt
+	ErrSealed   = types.ErrSealed
 )
 
 // WAL is a write-ahead log suitable for github.com/hashicorp/raft.
 type WAL struct {
 	dir    string
 	codec  Codec
-	sf     SegmentFiler
+	sf     types.SegmentFiler
 	metaDB MetaStore
 	log    hclog.Logger
 
@@ -75,7 +77,7 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 	}
 
 	newState := state{
-		segments:      &immutable.SortedMap[uint64, SegmentInfo]{},
+		segments:      &immutable.SortedMap[uint64, segmentState]{},
 		nextSegmentID: persisted.NextSegmentID,
 	}
 
@@ -111,9 +113,12 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 				return nil, err
 			}
 			// Set the tail and "reader" for this segment
-			si.r = sw
+			ss := segmentState{
+				SegmentInfo: si,
+				r:           sw,
+			}
 			newState.tail = sw
-			newState.segments = newState.segments.Set(si.BaseIndex, si)
+			newState.segments = newState.segments.Set(si.BaseIndex, ss)
 			recoveredTail = true
 
 			// We're done with this loop, break here to avoid nesting all the rest of
@@ -130,8 +135,11 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 		}
 
 		// Store the open reader to get logs from
-		si.r = sr
-		newState.segments = newState.segments.Set(si.BaseIndex, si)
+		ss := segmentState{
+			SegmentInfo: si,
+			r:           sr,
+		}
+		newState.segments = newState.segments.Set(si.BaseIndex, ss)
 	}
 
 	if !recoveredTail {
@@ -145,7 +153,10 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 		// yet and so lastIndex will also be 0.
 		si := w.newSegment(newState.nextSegmentID, 0)
 		newState.nextSegmentID++
-		newState.segments = newState.segments.Set(0, si)
+		ss := segmentState{
+			SegmentInfo: si,
+		}
+		newState.segments = newState.segments.Set(0, ss)
 
 		// Persist the new meta to "commit" it even before we create the file so we
 		// don't attempt to recreate files with duplicate IDs on a later failure.
@@ -162,8 +173,8 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 		// Update the segment in memory so we have a reader for the new segment. We
 		// don't need to commit again as this isn't changing the persisted metadata
 		// about the segment.
-		si.r = w
-		newState.segments = newState.segments.Set(si.BaseIndex, si)
+		ss.r = w
+		newState.segments = newState.segments.Set(si.BaseIndex, ss)
 	}
 
 	// Store the in-memory state (it was already persisted if we modified it
@@ -230,14 +241,19 @@ func (w *WAL) applyDefaultsAndValidate() error {
 	if w.codec == nil {
 		w.codec = &BinaryCodec{}
 	}
-	// TODO
+	if w.sf == nil {
+		// These are not actually swappable via options right now but we override
+		// them in tests. Only load the default implementations if they are not set.
+		vfs := fs.New()
+		w.sf = segment.NewFiler(w.dir, vfs)
+	}
 	return nil
 }
 
-// newSegment creates a SegmentInfo with the passed ID and baseIndex, filling in
+// newSegment creates a types.SegmentInfo with the passed ID and baseIndex, filling in
 // the segment parameters based on the current WAL configuration.
-func (w *WAL) newSegment(ID, baseIndex uint64) SegmentInfo {
-	return SegmentInfo{
+func (w *WAL) newSegment(ID, baseIndex uint64) types.SegmentInfo {
+	return types.SegmentInfo{
 		ID:        ID,
 		BaseIndex: baseIndex,
 		MinIndex:  baseIndex,
@@ -312,7 +328,7 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 				// Can't happen!
 				return nil, fmt.Errorf("invalid internal state! %w", ErrCorrupt)
 			}
-			// Note that we're mutating a copy of SegmentInfo since it's stored by value
+			// Note that we're mutating a copy of types.SegmentInfo since it's stored by value
 			// not reference.
 			seg0.MinIndex = logs[0].Index
 			s.segments = s.segments.Set(0, seg0)
@@ -326,7 +342,7 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 	}
 
 	// Encode logs
-	encoded := make([]LogEntry, len(logs))
+	encoded := make([]types.LogEntry, len(logs))
 	for i, l := range logs {
 		if lastIdx > 0 && l.Index != (lastIdx+1) {
 			return fmt.Errorf("non-monotonic log entries: tried to append index %d after %d", logs[0].Index, lastIdx)
@@ -512,7 +528,10 @@ func (w *WAL) createNextSegment(newState *state) error {
 	// Create a new segment
 	newTail := w.newSegment(newState.nextSegmentID, nextBaseIndex)
 	newState.nextSegmentID++
-	newState.segments = newState.segments.Set(newTail.BaseIndex, newTail)
+	ss := segmentState{
+		SegmentInfo: newTail,
+	}
+	newState.segments = newState.segments.Set(newTail.BaseIndex, ss)
 	newState.nextSegmentID++
 
 	// Commit the new meta to disk before we create new files so that we never
@@ -531,10 +550,10 @@ func (w *WAL) createNextSegment(newState *state) error {
 	// Also cache the reader/log getter which is also the writer. We don't bother
 	// reopening read only since we assume we have exclusive access anyway and
 	// only use this read-only interface once the segment is sealed.
-	newTail.r = newState.tail
+	ss.r = newState.tail
 
 	// We need to re-insert it since newTail is a copy not a reference
-	newState.segments = newState.segments.Set(newTail.BaseIndex, newTail)
+	newState.segments = newState.segments.Set(newTail.BaseIndex, ss)
 
 	return nil
 }
@@ -545,7 +564,7 @@ func (w *WAL) truncateHeadLocked(newMin uint64) error {
 		toDelete := make(map[uint64]uint64)
 		toClose := make([]io.Closer, 0, 1)
 		it := newState.segments.Iterator()
-		var head *SegmentInfo
+		var head *segmentState
 		for !it.Done() {
 			_, seg, _ := it.Next()
 

@@ -12,10 +12,10 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/hashicorp/go-wal"
+	"github.com/hashicorp/raft-wal/types"
 )
 
-// testVFS implements wal.VFS for testing.
+// testVFS implements types.VFS for testing.
 type testVFS struct {
 	dir   string
 	files map[string]*testWritableFile
@@ -70,7 +70,7 @@ func (fs *testVFS) setDir(dir string) error {
 // implementations should make a best effort to pre-allocate the file to be
 // that size. The dir must already exist and be writable to the current
 // process.
-func (fs *testVFS) Create(dir string, name string, size uint64) (wal.WritableFile, error) {
+func (fs *testVFS) Create(dir string, name string, size uint64) (types.WritableFile, error) {
 	if fs.createErr != nil {
 		return nil, fs.createErr
 	}
@@ -108,7 +108,7 @@ func (fs *testVFS) Delete(dir string, name string) error {
 // exist or permission is denied, an error is returned, otherwise no checks
 // are made about the well-formedness of the file, it may be empty, the wrong
 // size or corrupt in arbitrary ways.
-func (fs *testVFS) OpenReader(dir string, name string) (wal.ReadableFile, error) {
+func (fs *testVFS) OpenReader(dir string, name string) (types.ReadableFile, error) {
 	if fs.openErr != nil {
 		return nil, fs.openErr
 	}
@@ -126,7 +126,7 @@ func (fs *testVFS) OpenReader(dir string, name string) (wal.ReadableFile, error)
 // permission is denied, an error is returned, otherwise no checks are made
 // about the well-formedness of the file, it may be empty, the wrong size or
 // corrupt in arbitrary ways.
-func (fs *testVFS) OpenWriter(dir string, name string) (wal.WritableFile, error) {
+func (fs *testVFS) OpenWriter(dir string, name string) (types.WritableFile, error) {
 	if fs.openErr != nil {
 		return nil, fs.openErr
 	}
@@ -142,7 +142,7 @@ func (fs *testVFS) OpenWriter(dir string, name string) (wal.WritableFile, error)
 
 // testFileFor is a helper for reaching inside our interface types to access
 // the underlying "file".
-func testFileFor(t *testing.T, r wal.SegmentReader) *testWritableFile {
+func testFileFor(t *testing.T, r types.SegmentReader) *testWritableFile {
 	t.Helper()
 
 	switch v := r.(type) {

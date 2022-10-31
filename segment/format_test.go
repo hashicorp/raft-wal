@@ -10,14 +10,14 @@ import (
 	"testing"
 
 	fuzz "github.com/google/gofuzz"
-	"github.com/hashicorp/go-wal"
+	"github.com/hashicorp/raft-wal/types"
 	"github.com/stretchr/testify/require"
 )
 
 func TestFileHeaderCodec(t *testing.T) {
 	cases := []struct {
 		name         string
-		info         wal.SegmentInfo
+		info         types.SegmentInfo
 		bufSize      int
 		corrupt      func([]byte) []byte
 		wantWriteErr string
@@ -25,28 +25,28 @@ func TestFileHeaderCodec(t *testing.T) {
 	}{
 		{
 			name: "basic encoding/decoding",
-			info: wal.SegmentInfo{
+			info: types.SegmentInfo{
 				BaseIndex: 1234,
 				ID:        4321,
-				Codec:     wal.CodecBinaryV1,
+				Codec:     1,
 			},
 		},
 		{
 			name: "short buf writing",
-			info: wal.SegmentInfo{
+			info: types.SegmentInfo{
 				BaseIndex: 1234,
 				ID:        4321,
-				Codec:     wal.CodecBinaryV1,
+				Codec:     1,
 			},
 			bufSize:      10,
 			wantWriteErr: "short buffer",
 		},
 		{
 			name: "short buf reading",
-			info: wal.SegmentInfo{
+			info: types.SegmentInfo{
 				BaseIndex: 1234,
 				ID:        4321,
-				Codec:     wal.CodecBinaryV1,
+				Codec:     1,
 			},
 			corrupt: func(buf []byte) []byte {
 				return buf[0:5]
@@ -55,10 +55,10 @@ func TestFileHeaderCodec(t *testing.T) {
 		},
 		{
 			name: "bad magic reading",
-			info: wal.SegmentInfo{
+			info: types.SegmentInfo{
 				BaseIndex: 1234,
 				ID:        4321,
-				Codec:     wal.CodecBinaryV1,
+				Codec:     1,
 			},
 			corrupt: func(buf []byte) []byte {
 				buf[0] = 0xff
@@ -68,10 +68,10 @@ func TestFileHeaderCodec(t *testing.T) {
 		},
 		{
 			name: "bad BaseIndex reading",
-			info: wal.SegmentInfo{
+			info: types.SegmentInfo{
 				BaseIndex: 1234,
 				ID:        4321,
-				Codec:     wal.CodecBinaryV1,
+				Codec:     1,
 			},
 			corrupt: func(buf []byte) []byte {
 				buf[8] = 0xff
@@ -81,10 +81,10 @@ func TestFileHeaderCodec(t *testing.T) {
 		},
 		{
 			name: "bad ID reading",
-			info: wal.SegmentInfo{
+			info: types.SegmentInfo{
 				BaseIndex: 1234,
 				ID:        4321,
-				Codec:     wal.CodecBinaryV1,
+				Codec:     1,
 			},
 			corrupt: func(buf []byte) []byte {
 				buf[16] = 0xff
@@ -94,10 +94,10 @@ func TestFileHeaderCodec(t *testing.T) {
 		},
 		{
 			name: "bad Codec reading",
-			info: wal.SegmentInfo{
+			info: types.SegmentInfo{
 				BaseIndex: 1234,
 				ID:        4321,
-				Codec:     wal.CodecBinaryV1,
+				Codec:     1,
 			},
 			corrupt: func(buf []byte) []byte {
 				buf[24] = 0xff
@@ -141,7 +141,7 @@ func TestFileHeaderCodec(t *testing.T) {
 func TestFileHeaderCodecFuzz(t *testing.T) {
 	fuzz := fuzz.New()
 
-	var info wal.SegmentInfo
+	var info types.SegmentInfo
 	var buf [fileHeaderLen]byte
 	for i := 0; i < 1000; i++ {
 		fuzz.Fuzz(&info)

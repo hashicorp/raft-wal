@@ -1,4 +1,4 @@
-module github.com/hashicorp/go-wal
+module github.com/hashicorp/raft-wal
 
 go 1.19
 

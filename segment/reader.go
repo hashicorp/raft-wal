@@ -8,13 +8,13 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/hashicorp/go-wal"
+	"github.com/hashicorp/raft-wal/types"
 )
 
 // Reader allows reading logs from a segment file.
 type Reader struct {
-	info wal.SegmentInfo
-	rf   wal.ReadableFile
+	info types.SegmentInfo
+	rf   types.ReadableFile
 
 	// tail optionally providers an interface to the writer state when this is an
 	// unsealed segment so we can fetch from it's in-memory index.
@@ -25,7 +25,7 @@ type tailWriter interface {
 	OffsetForFrame(idx uint64) (uint32, error)
 }
 
-func openReader(info wal.SegmentInfo, rf wal.ReadableFile) (*Reader, error) {
+func openReader(info types.SegmentInfo, rf types.ReadableFile) (*Reader, error) {
 	var hdr [fileHeaderLen]byte
 
 	if _, err := rf.ReadAt(hdr[:], 0); err != nil {
@@ -48,7 +48,7 @@ func (r *Reader) Close() error {
 }
 
 // GetLog returns the raw log entry bytes associated with idx. If the log
-// doesn't exist in this segment ErrNotFound must be returned.
+// doesn't exist in this segment types.ErrNotFound must be returned.
 func (r *Reader) GetLog(idx uint64) ([]byte, error) {
 	offset, err := r.findFrameOffset(idx)
 	if err != nil {
@@ -79,7 +79,7 @@ func (r *Reader) readFrame(offset uint32, buf []byte) (frameHeader, []byte, erro
 
 	// Need to read more bytes, validate that len is a sensible number
 	if fh.len > MaxEntrySize {
-		return fh, nil, fmt.Errorf("%w: frame header indicates a record larger than MaxEntrySize (%d bytes)", wal.ErrCorrupt, MaxEntrySize)
+		return fh, nil, fmt.Errorf("%w: frame header indicates a record larger than MaxEntrySize (%d bytes)", types.ErrCorrupt, MaxEntrySize)
 	}
 
 	buf = make([]byte, fh.len)
@@ -106,7 +106,7 @@ func (r *Reader) findFrameOffset(idx uint64) (uint32, error) {
 	}
 
 	if idx < r.info.MinIndex || (r.info.MaxIndex > 0 && idx > r.info.MaxIndex) {
-		return 0, wal.ErrNotFound
+		return 0, types.ErrNotFound
 	}
 
 	// IndexStart is the offset to the first entry in the index array. We need to

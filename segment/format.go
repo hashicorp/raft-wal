@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/hashicorp/go-wal"
+	"github.com/hashicorp/raft-wal/types"
 )
 
 const (
@@ -67,7 +67,7 @@ var (
 */
 
 // writeFileHeader writes a file header into buf for the given file metadata.
-func writeFileHeader(buf []byte, info wal.SegmentInfo) error {
+func writeFileHeader(buf []byte, info types.SegmentInfo) error {
 	if len(buf) < fileHeaderLen {
 		return io.ErrShortBuffer
 	}
@@ -85,18 +85,18 @@ func writeFileHeader(buf []byte, info wal.SegmentInfo) error {
 }
 
 // readFileHeader reads a file header into	 buf for the given file metadata.
-func readFileHeader(buf []byte) (*wal.SegmentInfo, error) {
+func readFileHeader(buf []byte) (*types.SegmentInfo, error) {
 	if len(buf) < fileHeaderLen {
 		return nil, io.ErrShortBuffer
 	}
 
-	var i wal.SegmentInfo
+	var i types.SegmentInfo
 	m := binary.LittleEndian.Uint64(buf[0:8])
 	if m != magic {
-		return nil, wal.ErrCorrupt
+		return nil, types.ErrCorrupt
 	}
 	if buf[7] != version {
-		return nil, wal.ErrCorrupt
+		return nil, types.ErrCorrupt
 	}
 	i.BaseIndex = binary.LittleEndian.Uint64(buf[8:16])
 	i.ID = binary.LittleEndian.Uint64(buf[16:24])
@@ -104,7 +104,7 @@ func readFileHeader(buf []byte) (*wal.SegmentInfo, error) {
 	return &i, nil
 }
 
-func validateFileHeader(buf []byte, expect wal.SegmentInfo) error {
+func validateFileHeader(buf []byte, expect types.SegmentInfo) error {
 	got, err := readFileHeader(buf)
 	if err != nil {
 		return err
@@ -112,15 +112,15 @@ func validateFileHeader(buf []byte, expect wal.SegmentInfo) error {
 
 	if expect.ID != got.ID {
 		return fmt.Errorf("%w: segment header ID %x doesn't match metadata %x",
-			wal.ErrCorrupt, got.ID, expect.ID)
+			types.ErrCorrupt, got.ID, expect.ID)
 	}
 	if expect.BaseIndex != got.BaseIndex {
 		return fmt.Errorf("%w: segment header BaseIndex %d doesn't match metadata %d",
-			wal.ErrCorrupt, got.BaseIndex, expect.BaseIndex)
+			types.ErrCorrupt, got.BaseIndex, expect.BaseIndex)
 	}
 	if expect.Codec != got.Codec {
 		return fmt.Errorf("%w: segment header Codec %d doesn't match metadata %d",
-			wal.ErrCorrupt, got.Codec, expect.Codec)
+			types.ErrCorrupt, got.Codec, expect.Codec)
 	}
 
 	return nil
@@ -183,7 +183,7 @@ func readFrameHeader(buf []byte) (frameHeader, error) {
 
 	switch buf[0] {
 	default:
-		return h, fmt.Errorf("%w: corrupt frame header with unknown type %d", wal.ErrCorrupt, buf[0])
+		return h, fmt.Errorf("%w: corrupt frame header with unknown type %d", types.ErrCorrupt, buf[0])
 
 	case FrameInvalid:
 		// Check if the whole header is zero and return a zero frame as this could
@@ -192,7 +192,7 @@ func readFrameHeader(buf []byte) (frameHeader, error) {
 		if bytes.Equal(buf[:frameHeaderLen], zeroHeader[:]) {
 			return h, nil
 		}
-		return h, fmt.Errorf("%w: corrupt frame header with type 0 but non-zero other fields", wal.ErrCorrupt)
+		return h, fmt.Errorf("%w: corrupt frame header with type 0 but non-zero other fields", types.ErrCorrupt)
 
 	case FrameEntry, FrameIndex:
 		h.typ = buf[0]

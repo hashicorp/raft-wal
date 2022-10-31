@@ -9,7 +9,7 @@ import (
 	"io"
 	"sync/atomic"
 
-	"github.com/hashicorp/go-wal"
+	"github.com/hashicorp/raft-wal/types"
 )
 
 // Writer allows appending logs to a segment file as well as reading them back.
@@ -57,12 +57,12 @@ type Writer struct {
 		indexStart uint64
 	}
 
-	info wal.SegmentInfo
-	wf   wal.WritableFile
-	r    wal.SegmentReader
+	info types.SegmentInfo
+	wf   types.WritableFile
+	r    types.SegmentReader
 }
 
-func createFile(info wal.SegmentInfo, wf wal.WritableFile) (*Writer, error) {
+func createFile(info types.SegmentInfo, wf types.WritableFile) (*Writer, error) {
 	// Write header and sync
 	var hdr [fileHeaderLen]byte
 	if err := writeFileHeader(hdr[:], info); err != nil {
@@ -89,7 +89,7 @@ func createFile(info wal.SegmentInfo, wf wal.WritableFile) (*Writer, error) {
 	return w, nil
 }
 
-func recoverFile(info wal.SegmentInfo, wf wal.WritableFile) (*Writer, error) {
+func recoverFile(info types.SegmentInfo, wf types.WritableFile) (*Writer, error) {
 	// Read header
 	var hdr [fileHeaderLen]byte
 	if _, err := wf.ReadAt(hdr[:], 0); err != nil {
@@ -275,20 +275,20 @@ func (w *Writer) Close() error {
 	return w.r.Close()
 }
 
-// GetLog implements wal.SegmentReader
+// GetLog implements types.SegmentReader
 func (w *Writer) GetLog(idx uint64) ([]byte, error) {
 	return w.r.GetLog(idx)
 }
 
 // Append adds one or more entries. It must not return until the entries are
 // durably stored otherwise raft's guarantees will be compromised.
-func (w *Writer) Append(entries []wal.LogEntry) error {
+func (w *Writer) Append(entries []types.LogEntry) error {
 	if len(entries) < 1 {
 		return nil
 	}
 
 	if w.writer.indexStart > 0 {
-		return wal.ErrSealed
+		return types.ErrSealed
 	}
 
 	// Iterate entries and append each one
@@ -325,7 +325,7 @@ func (w *Writer) getOffsets() []uint32 {
 // frames in the tail's in-memory index.
 func (w *Writer) OffsetForFrame(idx uint64) (uint32, error) {
 	if idx < w.info.MinIndex || idx > w.LastIndex() {
-		return 0, wal.ErrNotFound
+		return 0, types.ErrNotFound
 	}
 	os := w.getOffsets()
 	entryIndex := idx - w.info.BaseIndex
@@ -333,7 +333,7 @@ func (w *Writer) OffsetForFrame(idx uint64) (uint32, error) {
 	return os[entryIndex], nil
 }
 
-func (w *Writer) appendEntry(e wal.LogEntry) error {
+func (w *Writer) appendEntry(e types.LogEntry) error {
 	fh := frameHeader{
 		typ: FrameEntry,
 		len: uint32(len(e.Data)),

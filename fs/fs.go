@@ -11,8 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/coreos/etcd/pkg/fileutil"
-
-	"github.com/hashicorp/go-wal"
+	"github.com/hashicorp/raft-wal/types"
 )
 
 // FS implements the wal.VFS interface using GO's built in OS
@@ -47,7 +46,7 @@ func (fs *FS) ListDir(dir string) ([]string, error) {
 // implementations should make a best effort to pre-allocate the file to be
 // that size. The dir must already exist and be writable to the current
 // process.
-func (fs *FS) Create(dir string, name string, size uint64) (wal.WritableFile, error) {
+func (fs *FS) Create(dir string, name string, size uint64) (types.WritableFile, error) {
 	f, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644))
 	if err != nil {
 		return nil, err
@@ -93,7 +92,7 @@ func (fs *FS) Delete(dir string, name string) error {
 // exist or permission is denied, an error is returned, otherwise no checks
 // are made about the well-formedness of the file, it may be empty, the wrong
 // size or corrupt in arbitrary ways.
-func (fs *FS) OpenReader(dir string, name string) (wal.ReadableFile, error) {
+func (fs *FS) OpenReader(dir string, name string) (types.ReadableFile, error) {
 	return os.OpenFile(filepath.Join(dir, name), os.O_RDONLY, os.FileMode(0644))
 }
 
@@ -101,7 +100,7 @@ func (fs *FS) OpenReader(dir string, name string) (wal.ReadableFile, error) {
 // permission is denied, an error is returned, otherwise no checks are made
 // about the well-formedness of the file, it may be empty, the wrong size or
 // corrupt in arbitrary ways.
-func (fs *FS) OpenWriter(dir string, name string) (wal.WritableFile, error) {
+func (fs *FS) OpenWriter(dir string, name string) (types.WritableFile, error) {
 	return os.OpenFile(filepath.Join(dir, name), os.O_RDWR, os.FileMode(0644))
 }
 

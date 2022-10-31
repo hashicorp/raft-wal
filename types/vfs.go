@@ -1,7 +1,7 @@
 // Copyright (c) HashiCorp, Inc
 // SPDX-License-Identifier: MPL-2.0
 
-package wal
+package types
 
 import "io"
 
@@ -42,8 +42,8 @@ type VFS interface {
 	OpenWriter(dir, name string) (WritableFile, error)
 }
 
-// WritableFile provides write access to a page-based file that stores an array
-// of fixed-size blocks on disk.
+// WritableFile provides random read-write access to a file as well as the
+// ability to fsync it to disk.
 type WritableFile interface {
 	io.WriterAt
 	io.ReaderAt
@@ -52,6 +52,7 @@ type WritableFile interface {
 	Sync() error
 }
 
+// ReadableFile provides random read access to a file.
 type ReadableFile interface {
 	io.ReaderAt
 	io.Closer

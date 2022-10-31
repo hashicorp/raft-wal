@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/hashicorp/go-wal"
+	"github.com/hashicorp/raft-wal/types"
 )
 
 const (
@@ -20,11 +20,11 @@ const (
 // testing.
 type Filer struct {
 	dir string
-	vfs wal.VFS
+	vfs types.VFS
 }
 
 // NewFiler creates a Filer ready for use.
-func NewFiler(dir string, vfs wal.VFS) *Filer {
+func NewFiler(dir string, vfs types.VFS) *Filer {
 	return &Filer{
 		dir: dir,
 		vfs: vfs,
@@ -33,13 +33,13 @@ func NewFiler(dir string, vfs wal.VFS) *Filer {
 
 // FileName returns the formatted file name expected for this segment.
 // SegmentFiler implementations could choose to ignore this but it's here to
-func FileName(i wal.SegmentInfo) string {
+func FileName(i types.SegmentInfo) string {
 	return fmt.Sprintf(segmentFileNamePattern, i.BaseIndex, i.ID)
 }
 
 // Create adds a new segment with the given info and returns a writer or an
 // error.
-func (f *Filer) Create(info wal.SegmentInfo) (wal.SegmentWriter, error) {
+func (f *Filer) Create(info types.SegmentInfo) (types.SegmentWriter, error) {
 	if info.BaseIndex == 0 {
 		return nil, fmt.Errorf("BaseIndex must be greater than zero")
 	}
@@ -56,7 +56,7 @@ func (f *Filer) Create(info wal.SegmentInfo) (wal.SegmentWriter, error) {
 // RecoverTail is called on an unsealed segment when re-opening the WAL it
 // will attempt to recover from a possible crash. It will either return an
 // error, or return a valid segmentWriter that is ready for further appends.
-func (f *Filer) RecoverTail(info wal.SegmentInfo) (wal.SegmentWriter, error) {
+func (f *Filer) RecoverTail(info types.SegmentInfo) (types.SegmentWriter, error) {
 	fname := FileName(info)
 
 	wf, err := f.vfs.OpenWriter(f.dir, fname)
@@ -69,7 +69,7 @@ func (f *Filer) RecoverTail(info wal.SegmentInfo) (wal.SegmentWriter, error) {
 
 // Open an already sealed segment for reading. Open may validate the file's
 // header and return an error if it doesn't match the expected info.
-func (f *Filer) Open(info wal.SegmentInfo) (wal.SegmentReader, error) {
+func (f *Filer) Open(info types.SegmentInfo) (types.SegmentReader, error) {
 	fname := FileName(info)
 
 	rf, err := f.vfs.OpenReader(f.dir, fname)
@@ -100,12 +100,12 @@ func (f *Filer) List() (map[uint64]uint64, error) {
 		var bIdx, id uint64
 		n, err := fmt.Sscanf(file, segmentFileNamePattern, &bIdx, &id)
 		if err != nil {
-			return nil, wal.ErrCorrupt
+			return nil, types.ErrCorrupt
 		}
 		if n != 2 {
 			// Misnamed segment files with the right suffix indicates a bug or
 			// tampering, we can't be sure what's happened to the data.
-			return nil, wal.ErrCorrupt
+			return nil, types.ErrCorrupt
 		}
 		segs[id] = bIdx
 	}
