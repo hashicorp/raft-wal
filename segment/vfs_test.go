@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hashicorp/raft-wal/types"
@@ -157,16 +158,20 @@ func testFileFor(t *testing.T, r types.SegmentReader) *testWritableFile {
 }
 
 type testWritableFile struct {
-	buf           []byte
+	buf           atomic.Value // []byte
 	maxWritten    int
 	lastSyncStart int
 	closed, dirty bool
 }
 
 func newTestWritableFile(size int) *testWritableFile {
-	return &testWritableFile{
-		buf: make([]byte, size),
-	}
+	wf := &testWritableFile{}
+	wf.buf.Store(make([]byte, 0, size))
+	return wf
+}
+
+func (f *testWritableFile) getBuf() []byte {
+	return f.buf.Load().([]byte)
 }
 
 func (f *testWritableFile) Dump() string {
@@ -176,7 +181,8 @@ func (f *testWritableFile) Dump() string {
 	if max < 128 {
 		max = 128
 	}
-	_, err := d.Write(f.buf[:max])
+	bs := f.getBuf()
+	_, err := d.Write(bs[:max])
 	if err != nil {
 		panic(err)
 	}
@@ -189,25 +195,46 @@ func (f *testWritableFile) WriteAt(p []byte, off int64) (n int, err error) {
 	}
 	f.dirty = true
 	maxOffset := int(off) + len(p)
-	if maxOffset > len(f.buf) {
+	buf := f.getBuf()
+	if maxOffset > len(buf) {
 		// re-allocate to simulate appending additional bytes to end of a
 		// pre-allocated file.
 		nb := make([]byte, maxOffset)
-		copy(nb, f.buf)
-		f.buf = nb
+		copy(nb, buf)
+		buf = nb
+	} else if off < int64(len(buf)) {
+		// If this write is to an offset that was already visible to readers (less
+		// than len(buf)) we can't write because that's racey, need to copy whole
+		// buffer to mutate it safely.
+		nb := make([]byte, len(buf), cap(buf))
+		copy(nb, buf)
+		buf = nb
 	}
-	copy(f.buf[off:], p)
+	copy(buf[off:], p)
 	if maxOffset > f.maxWritten {
 		f.maxWritten = maxOffset
 	}
+	// Atomically replace the slice to allow readers to see the new appended data
+	// or new backing array if we reallocated.
+	f.buf.Store(buf)
 	return len(p), nil
 }
 
 func (f *testWritableFile) ReadAt(p []byte, off int64) (n int, err error) {
-	if int(off) >= len(f.buf) {
+	buf := f.getBuf()
+	// Note we treat the whole cap of buf as "in" the file
+	if int(off) >= cap(buf) {
 		return 0, io.EOF
 	}
-	copy(p, f.buf[off:])
+	if off >= int64(len(buf)) {
+		// Offset is within capacity of "file" but after the maximum visible byte so
+		// just return empty bytes.
+		for i := 0; i < len(p); i++ {
+			p[i] = 0
+		}
+		return len(p), nil
+	}
+	copy(p, buf[off:])
 	return len(p), nil
 }
 

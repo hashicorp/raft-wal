@@ -4,11 +4,13 @@
 package segment
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/raft-wal/types"
 	"github.com/stretchr/testify/require"
@@ -131,10 +133,8 @@ func TestRecovery(t *testing.T) {
 			appendEntrySizes:   []int{10, 10, 10, 10},
 			corrupt: func(twf *testWritableFile) error {
 				// zero out just the very last commit frame
-				for i := twf.maxWritten - frameHeaderLen; i < twf.maxWritten; i++ {
-					twf.buf[i] = 0
-				}
-				return nil
+				_, err := twf.WriteAt(bytes.Repeat([]byte{0}, frameHeaderLen), int64(twf.maxWritten-frameHeaderLen))
+				return err
 			},
 			// should recover back to before the append
 			wantLastIndex: 10,
@@ -145,8 +145,8 @@ func TestRecovery(t *testing.T) {
 			appendEntrySizes:   []int{10, 10, 10, 10},
 			corrupt: func(twf *testWritableFile) error {
 				// corrupt a byte in the last commit
-				twf.buf[fileHeaderLen+frameHeaderLen] = 127
-				return nil
+				_, err := twf.WriteAt([]byte{127}, int64(fileHeaderLen+frameHeaderLen))
+				return err
 			},
 			// should recover back to before the append
 			wantLastIndex: 0,
@@ -158,8 +158,8 @@ func TestRecovery(t *testing.T) {
 			corrupt: func(twf *testWritableFile) error {
 				// zero out one byte from somewhere near the start of the commit (but
 				// not in the frameheader)
-				twf.buf[twf.lastSyncStart+10] = 0
-				return nil
+				_, err := twf.WriteAt([]byte{0}, int64(twf.lastSyncStart+frameHeaderLen+2))
+				return err
 			},
 			// should recover back to before the append
 			wantLastIndex: 10,
@@ -172,8 +172,8 @@ func TestRecovery(t *testing.T) {
 				// We rely on knowing the sizes of the entries in this case which were
 				// header + 10 byte + 6 bytes padding each. We corrupt not the first but
 				// second header. We'll set the typ byte to an invalid value.
-				twf.buf[twf.lastSyncStart+encodedFrameSize(10)] = 65
-				return nil
+				_, err := twf.WriteAt([]byte{65}, int64(twf.lastSyncStart+encodedFrameSize(10)))
+				return err
 			},
 			// should recover back to before the append
 			wantLastIndex: 10,
@@ -183,7 +183,8 @@ func TestRecovery(t *testing.T) {
 			numPreviousEntries: 0,
 			appendEntrySizes:   []int{},
 			corrupt: func(twf *testWritableFile) error {
-				twf.buf = twf.buf[:0]
+				buf := twf.getBuf()
+				twf.buf.Store(buf[:0])
 				twf.dirty = false
 				twf.maxWritten = 0
 				return nil
@@ -196,8 +197,9 @@ func TestRecovery(t *testing.T) {
 			numPreviousEntries: 0,
 			appendEntrySizes:   []int{},
 			corrupt: func(twf *testWritableFile) error {
-				twf.buf[0] = 123 // twiddle the magic value
-				return nil
+				// twiddle the magic value
+				_, err := twf.WriteAt([]byte{123}, 0)
+				return err
 			},
 			// should throw an EOF error on recover as there is no file header to verify
 			wantErr: "corrupt",
@@ -207,8 +209,9 @@ func TestRecovery(t *testing.T) {
 			numPreviousEntries: 0,
 			appendEntrySizes:   []int{},
 			corrupt: func(twf *testWritableFile) error {
-				twf.buf[8] = 123 // twiddle the base index
-				return nil
+				// twiddle the base index
+				_, err := twf.WriteAt([]byte{123}, 8)
+				return err
 			},
 			// should throw an EOF error on recover as there is no file header to verify
 			wantErr: "segment header BaseIndex 123 doesn't match metadata 1",
@@ -221,11 +224,23 @@ func TestRecovery(t *testing.T) {
 			wantLastIndex:    5,
 			// After recovery we should find it is already sealed.
 			wantSealed: true,
-			// Note that we'll implicitly test we can read all the indexes. Through
-			// the reader after recovery. That's a different path to reading frm the
+			// Note that we'll implicitly test we can read all the indexes through the
+			// reader after recovery. That's a different path to reading frm the
 			// on-disk index though which is tested in reader_test.go
 		},
-		// TODO values larger than minBufSize
+		{
+			name:               "sealed tail",
+			numPreviousEntries: 0,
+			// Write a value larger than our minBufSize to check those read/Write code
+			// paths work. This will also seal the segment in one shot.
+			appendEntrySizes: []int{minBufSize + 10},
+			wantLastIndex:    5,
+			// After recovery we should find it is already sealed.
+			wantSealed: true,
+			// Note that we'll implicitly test we can read all the indexes through the
+			// reader after recovery. That's a different path to reading frm the
+			// on-disk index though which is tested in reader_test.go
+		},
 	}
 
 	for _, tc := range cases {
@@ -456,9 +471,116 @@ func testSegment(baseIndex uint64) types.SegmentInfo {
 	id := atomic.AddUint64(&nextSegID, 1)
 	return types.SegmentInfo{
 		BaseIndex: baseIndex,
+		MinIndex:  baseIndex,
 		ID:        id,
 		Codec:     1,
 		SizeLimit: 4 * 1024, // Small limit to make it easier to test sealing
 		// Other fields don't really matter at segment level for now.
 	}
+}
+
+// TestConcurrentReadersAndWriter is designed to be run with race detector
+// enabled to validate the concurrent behavior of the segment.
+func TestConcurrentReadersAndWriter(t *testing.T) {
+	vfs := newTestVFS()
+	f := NewFiler("test", vfs)
+
+	seg1 := testSegment(1)
+
+	// Increase size limit so we keep going for a while. We don't want to make
+	// this too large that we time out easily on slower machines though or in CI.
+	// 256KiB passes easily on my laptop (~5s) and is big enough to take a
+	// while to test concurrent accesses.
+	seg1.SizeLimit = 256 * 1024
+
+	wf, err := f.Create(seg1)
+	require.NoError(t, err)
+
+	var lastIndexWritten uint64
+	var sealedMaxIndex uint64
+	var numReads uint64
+
+	writer := func() {
+		idx := uint64(1)
+		for {
+			err := wf.Append([]types.LogEntry{{Index: idx, Data: []byte("test")}})
+			if err != nil {
+				panic("error during append: " + err.Error())
+			}
+
+			sealed, _, err := wf.Sealed()
+			if err != nil {
+				panic("error during sealed: " + err.Error())
+			}
+			atomic.StoreUint64(&lastIndexWritten, idx)
+			if sealed {
+				atomic.StoreUint64(&sealedMaxIndex, idx)
+				return
+			}
+			idx++
+		}
+	}
+
+	reader := func(doneCh chan<- struct{}) {
+		// Follow the tail
+		idx := uint64(1)
+		for {
+			// Complete once writer has stopped and we've read all of it's written
+			// entries.
+			finalIdx := atomic.LoadUint64(&sealedMaxIndex)
+			if finalIdx > 0 && idx > finalIdx {
+				doneCh <- struct{}{}
+				return
+			}
+			if idx > wf.LastIndex() {
+				time.Sleep(time.Millisecond)
+				continue
+			}
+
+			log, err := wf.GetLog(idx)
+			if err != nil {
+				panic("error during GetLog: " + err.Error())
+			}
+			if string(log) != "test" {
+				panic("bad log read: " + string(log))
+			}
+			atomic.AddUint64(&numReads, 1)
+			idx++
+		}
+	}
+
+	// Start 10 readers and 1 writer in parallel
+	done := make(chan struct{}, 10)
+	for i := 0; i < cap(done); i++ {
+		go reader(done)
+	}
+	go writer()
+
+	complete := 0
+	// Takes about 5 seconds on my laptop. Give it a really generous margin for CI
+	// etc. though.
+	timeoutCh := time.After(30 * time.Second)
+	for complete < cap(done) {
+		select {
+		case <-timeoutCh:
+			t.Fatalf("Took longer than 10 seconds to write and read the whole segment. w=%d, r=%d s=%d",
+				atomic.LoadUint64(&lastIndexWritten),
+				atomic.LoadUint64(&numReads),
+				atomic.LoadUint64(&sealedMaxIndex),
+			)
+		case <-done:
+			complete++
+		}
+	}
+
+	t.Logf("Written: %d, Read: %d, SealedMax: %d",
+		atomic.LoadUint64(&lastIndexWritten),
+		atomic.LoadUint64(&numReads),
+		atomic.LoadUint64(&sealedMaxIndex),
+	)
+
+	// Check we actually did something!
+	require.Greater(t, int(atomic.LoadUint64(&lastIndexWritten)), 1000)
+	require.Greater(t, int(atomic.LoadUint64(&numReads)), 1000)
+	require.Greater(t, int(atomic.LoadUint64(&sealedMaxIndex)), 1000)
 }

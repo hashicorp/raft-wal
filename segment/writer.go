@@ -324,7 +324,7 @@ func (w *Writer) getOffsets() []uint32 {
 // OffsetForFrame implements tailWriter and allows readers to lookup entry
 // frames in the tail's in-memory index.
 func (w *Writer) OffsetForFrame(idx uint64) (uint32, error) {
-	if idx < w.info.MinIndex || idx > w.LastIndex() {
+	if idx < w.info.BaseIndex || idx < w.info.MinIndex || idx > w.LastIndex() {
 		return 0, types.ErrNotFound
 	}
 	os := w.getOffsets()
