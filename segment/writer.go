@@ -362,11 +362,12 @@ func (w *Writer) appendCommit() error {
 }
 
 func (w *Writer) ensureBufCap(extraLen int) {
-	if cap(w.writer.commitBuf) < (len(w.writer.commitBuf) + extraLen) {
-		// Grow the buffer, lets just double it to amortize cost
-		newSize := cap(w.writer.commitBuf) * 2
-		if newSize < minBufSize {
-			newSize = minBufSize
+	needCap := len(w.writer.commitBuf) + extraLen
+	if cap(w.writer.commitBuf) < needCap {
+		newSize := minBufSize
+		// Double buffer size until it's big enough to amortize cost
+		for newSize < needCap {
+			newSize = newSize * 2
 		}
 		newBuf := make([]byte, newSize)
 		oldLen := len(w.writer.commitBuf)

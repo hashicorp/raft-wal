@@ -177,11 +177,11 @@ func (f *testWritableFile) getBuf() []byte {
 func (f *testWritableFile) Dump() string {
 	var buf bytes.Buffer
 	d := hex.Dumper(&buf)
-	max := f.maxWritten
-	if max < 128 {
-		max = 128
-	}
 	bs := f.getBuf()
+	max := 128
+	if len(bs) < 128 {
+		max = len(bs)
+	}
 	_, err := d.Write(bs[:max])
 	if err != nil {
 		panic(err)
