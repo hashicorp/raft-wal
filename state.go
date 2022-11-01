@@ -135,6 +135,16 @@ func (s *state) firstIndex() uint64 {
 	if !ok {
 		return 0
 	}
+	if seg.SealTime.IsZero() {
+		// First segment is unsealed so is also the tail. Check it actually has at
+		// least one log in otherwise it doesn't matter what the BaseIndex/MinIndex
+		// are.
+		if s.tail.LastIndex() == 0 {
+			// No logs in the WAL
+			return 0
+		}
+		// At least one log exists, return the MinIndex
+	}
 	return seg.MinIndex
 }
 
@@ -161,11 +171,11 @@ func (s *state) release() {
 	// decrement on release
 	new := atomic.AddInt32(&s.refCount, -1)
 	if new == 0 {
-		// TODO cleanup state associated with this version now all refs have gone.
-		// Since there are no more refs and we should not set a finalizer until this
-		// state is no longer the active state we can be sure this will happen only
-		// one. Even still lets swap the fn to ensure we only call finalizer once
-		// ever! We can't swap atual nil as it's not the same type as func() so do a
+		// Cleanup state associated with this version now all refs have gone. Since
+		// there are no more refs and we should not set a finalizer until this state
+		// is no longer the active state, we can be sure this will happen only one.
+		// Even still lets swap the fn to ensure we only call finalizer once ever!
+		// We can't swap actual nil as it's not the same type as func() so do a
 		// dance with a nilFn below.
 		var nilFn func()
 		fnRaw := s.finalizer.Swap(nilFn)

@@ -187,8 +187,9 @@ func validateLogEntry(t *testing.T, log *raft.Log) {
 
 func makeTestStorage(opts ...testStorageOpt) *testStorage {
 	ts := &testStorage{
-		segments: make(map[uint64]*testSegment),
-		stable:   make(map[string][]byte),
+		segments:      make(map[uint64]*testSegment),
+		stable:        make(map[string][]byte),
+		setupMaxIndex: 1, // Start from index 1 like raft
 	}
 	for _, fn := range opts {
 		fn(ts)

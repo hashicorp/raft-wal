@@ -38,8 +38,8 @@ func TestWALOpen(t *testing.T) {
 		},
 		{
 			name: "empty dir creates new log",
-			// Should end up with one segment created with baseIndex 0
-			expectSegmentBases: []uint64{0},
+			// Should end up with one segment created with baseIndex 1
+			expectSegmentBases: []uint64{1},
 			expectCalls: map[string]int{
 				"Create":      1,
 				"CommitState": 1,
@@ -54,14 +54,14 @@ func TestWALOpen(t *testing.T) {
 			tsOpts: []testStorageOpt{
 				segTail(10), // Single tail segment with 10 entries
 			},
-			expectSegmentBases: []uint64{0},
+			expectSegmentBases: []uint64{1},
 			expectCalls: map[string]int{
 				"List":        1,
 				"Load":        1,
 				"RecoverTail": 1,
 			},
-			expectFirstIndex: 0,
-			expectLastIndex:  9,
+			expectFirstIndex: 1,
+			expectLastIndex:  10,
 		},
 		{
 			name: "multiple segment recovery",
@@ -70,15 +70,15 @@ func TestWALOpen(t *testing.T) {
 				segFull(),
 				segTail(10),
 			},
-			expectSegmentBases: []uint64{0, 100, 200},
+			expectSegmentBases: []uint64{1, 101, 201},
 			expectCalls: map[string]int{
 				"List":        1,
 				"Load":        1,
 				"RecoverTail": 1,
 				"Open":        2,
 			},
-			expectFirstIndex: 0,
-			expectLastIndex:  209,
+			expectFirstIndex: 1,
+			expectLastIndex:  210,
 		},
 		{
 			name: "metadb load fails",
@@ -257,9 +257,9 @@ func TestStoreLogs(t *testing.T) {
 	}{
 		{
 			name:             "empty log append",
-			store:            makeRaftLogs(0, 5),
-			expectFirstIndex: 0,
-			expectLastIndex:  4,
+			store:            makeRaftLogs(1, 5),
+			expectFirstIndex: 1,
+			expectLastIndex:  5,
 		},
 		{
 			name:             "empty log append, start from non-zero",
@@ -272,9 +272,9 @@ func TestStoreLogs(t *testing.T) {
 			tsOpts: []testStorageOpt{
 				segTail(10),
 			},
-			store:            makeRaftLogs(10, 5),
-			expectFirstIndex: 0,
-			expectLastIndex:  14,
+			store:            makeRaftLogs(11, 5),
+			expectFirstIndex: 1,
+			expectLastIndex:  15,
 		},
 		{
 			name: "existing multi segment log append",
@@ -283,16 +283,16 @@ func TestStoreLogs(t *testing.T) {
 				segFull(),
 				segTail(10),
 			},
-			store:            makeRaftLogs(210, 5),
-			expectFirstIndex: 0,
-			expectLastIndex:  214,
+			store:            makeRaftLogs(211, 5),
+			expectFirstIndex: 1,
+			expectLastIndex:  215,
 		},
 		{
 			name: "out of order",
 			tsOpts: []testStorageOpt{
 				segTail(10),
 			},
-			// Append logs starting from 100 when tail is currently 9
+			// Append logs starting from 100 when tail is currently 10
 			store:     makeRaftLogs(100, 5),
 			expectErr: "non-monotonic log entries",
 		},
@@ -301,8 +301,8 @@ func TestStoreLogs(t *testing.T) {
 			tsOpts: []testStorageOpt{
 				segTail(10),
 			},
-			// Append logs starting from 9 but not with gaps internally
-			store:     makeRaftLogsSparse(9, 10, 14, 15),
+			// Append logs starting from 10 but not with gaps internally
+			store:     makeRaftLogsSparse(10, 11, 14, 15),
 			expectErr: "non-monotonic log entries",
 		},
 		{
@@ -310,19 +310,19 @@ func TestStoreLogs(t *testing.T) {
 			tsOpts: []testStorageOpt{
 				segTail(99),
 			},
-			store:            makeRaftLogs(99, 5),
-			expectFirstIndex: 0,
-			expectLastIndex:  103,
+			store:            makeRaftLogs(100, 5),
+			expectFirstIndex: 1,
+			expectLastIndex:  104,
 		},
 		{
 			name: "rotate and append more",
 			tsOpts: []testStorageOpt{
 				segTail(99),
 			},
-			store:            makeRaftLogs(99, 5),
-			store2:           makeRaftLogs(104, 5),
-			expectFirstIndex: 0,
-			expectLastIndex:  108,
+			store:            makeRaftLogs(100, 5),
+			store2:           makeRaftLogs(105, 5),
+			expectFirstIndex: 1,
+			expectLastIndex:  109,
 		},
 		{
 			name: "empty rotate and append more",

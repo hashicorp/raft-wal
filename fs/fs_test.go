@@ -6,7 +6,6 @@ package fs
 import (
 	"bytes"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,7 +14,7 @@ import (
 )
 
 func TestFS(t *testing.T) {
-	tmpDir, err := ioutil.TempDir("", "wal-fs-test-*")
+	tmpDir, err := os.MkdirTemp("", "raft-wal-fs-test-*")
 	require.NoError(t, err)
 	defer os.RemoveAll(tmpDir)
 

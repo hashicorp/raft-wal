@@ -33,7 +33,7 @@ func TestMetaDB(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			tmpDir, err := ioutil.TempDir("", "wal-fs-test-*")
+			tmpDir, err := os.MkdirTemp("", "raft-wal-meta-test-*")
 			require.NoError(t, err)
 			defer os.RemoveAll(tmpDir)
 
@@ -74,7 +74,7 @@ func TestMetaDB(t *testing.T) {
 }
 
 func TestMetaDBErrors(t *testing.T) {
-	tmpDir, err := ioutil.TempDir("", "wal-fs-test-*")
+	tmpDir, err := os.MkdirTemp("", "raft-wal-meta-test-*")
 	require.NoError(t, err)
 	defer os.RemoveAll(tmpDir)
 

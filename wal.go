@@ -59,7 +59,9 @@ type walOpt func(*WAL)
 // otherwise the returned *WAL is in a state ready for use.
 func Open(dir string, opts ...walOpt) (*WAL, error) {
 
-	w := &WAL{}
+	w := &WAL{
+		dir: dir,
+	}
 	// Apply options
 	for _, opt := range opts {
 		opt(w)
@@ -146,15 +148,15 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 		// truncation that removed all segments) since we otherwise never allow the
 		// state to have a sealed tail segment. But this logic works regardless!
 
-		// Create a new segment. We use baseIndex of 0 even though the first append
+		// Create a new segment. We use baseIndex of 1 even though the first append
 		// might be much higher - we'll allow that since we know we have no records
 		// yet and so lastIndex will also be 0.
-		si := w.newSegment(newState.nextSegmentID, 0)
+		si := w.newSegment(newState.nextSegmentID, 1)
 		newState.nextSegmentID++
 		ss := segmentState{
 			SegmentInfo: si,
 		}
-		newState.segments = newState.segments.Set(0, ss)
+		newState.segments = newState.segments.Set(si.BaseIndex, ss)
 
 		// Persist the new meta to "commit" it even before we create the file so we
 		// don't attempt to recreate files with duplicate IDs on a later failure.
@@ -290,24 +292,24 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 
 	// Special case, if the log is currently empty and this is the first append,
 	// we allow any starting index. But in most cases we've already created a
-	// segment with BaseIndex of zero to start using. That means we need to update
+	// segment with BaseIndex of 1 to start using. That means we need to update
 	// the metadata for the segment to set MinIndex. This is the only time we will
 	// force a metaDB sync on a StoreLogs call so it seems OK to ensure that
 	// MetaDB correctly reflects the range of logs stored. The alternative would
 	// be not to allocate the segment file at all until now but that would be even
 	// more expensive!
-	if lastIdx == 0 && logs[0].Index > 0 {
+	if lastIdx == 0 && logs[0].Index > 1 {
 
 		txn := func(s *state) (func(), error) {
-			seg0, ok := s.segments.Get(0)
+			seg1, ok := s.segments.Get(1)
 			if !ok {
 				// Can't happen!
 				return nil, fmt.Errorf("invalid internal state! %w", ErrCorrupt)
 			}
 			// Note that we're mutating a copy of types.SegmentInfo since it's stored by value
 			// not reference.
-			seg0.MinIndex = logs[0].Index
-			s.segments = s.segments.Set(0, seg0)
+			seg1.MinIndex = logs[0].Index
+			s.segments = s.segments.Set(seg1.BaseIndex, seg1)
 			return nil, nil
 		}
 
@@ -495,8 +497,8 @@ func (w *WAL) createNextSegment(newState *state) error {
 	// Find existing sealed tail
 	tail := newState.getTailInfo()
 
-	// If there is no tail, next baseIndex is 0
-	nextBaseIndex := uint64(0)
+	// If there is no tail, next baseIndex is 1
+	nextBaseIndex := uint64(1)
 	if tail != nil {
 		nextBaseIndex = tail.MaxIndex + 1
 	}
@@ -606,7 +608,7 @@ func (w *WAL) truncateTailLocked(newMax uint64) error {
 
 			toDelete[seg.ID] = seg.BaseIndex
 			toClose = append(toClose, seg.r)
-			newState.segments = newState.segments.Delete(seg.ID)
+			newState.segments = newState.segments.Delete(seg.BaseIndex)
 		}
 
 		tail := newState.getTailInfo()
