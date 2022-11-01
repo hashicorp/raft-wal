@@ -42,14 +42,14 @@ type segmentState struct {
 }
 
 // Commit converts the in-memory state into a PersistentState.
-func (s *state) Persistent() PersistentState {
+func (s *state) Persistent() types.PersistentState {
 	segs := make([]types.SegmentInfo, 0, s.segments.Len())
 	it := s.segments.Iterator()
 	for !it.Done() {
 		_, s, _ := it.Next()
 		segs = append(segs, s.SegmentInfo)
 	}
-	return PersistentState{
+	return types.PersistentState{
 		NextSegmentID: s.nextSegmentID,
 		Segments:      segs,
 	}

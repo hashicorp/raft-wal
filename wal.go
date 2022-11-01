@@ -16,8 +16,6 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
-	"github.com/hashicorp/raft-wal/fs"
-	"github.com/hashicorp/raft-wal/segment"
 	"github.com/hashicorp/raft-wal/types"
 )
 
@@ -35,7 +33,7 @@ type WAL struct {
 	dir    string
 	codec  Codec
 	sf     types.SegmentFiler
-	metaDB MetaStore
+	metaDB types.MetaStore
 	log    hclog.Logger
 
 	// s is the current state of the WAL files. It is an immutable snapshot that
@@ -226,28 +224,6 @@ func (w *WAL) mutateStateLocked(tx stateTxn) error {
 func (w *WAL) acquireState() (*state, func()) {
 	s := w.s.Load()
 	return s, s.acquire()
-}
-
-func (w *WAL) applyDefaultsAndValidate() error {
-	// Check if an external codec has been used that it's not using a reserved ID.
-	if w.codec != nil && w.codec.ID() < FirstExternalCodecID {
-		return fmt.Errorf("codec is using a reserved ID (below %d)", FirstExternalCodecID)
-	}
-
-	// Defaults
-	if w.log == nil {
-		w.log = hclog.Default().Named("wal")
-	}
-	if w.codec == nil {
-		w.codec = &BinaryCodec{}
-	}
-	if w.sf == nil {
-		// These are not actually swappable via options right now but we override
-		// them in tests. Only load the default implementations if they are not set.
-		vfs := fs.New()
-		w.sf = segment.NewFiler(w.dir, vfs)
-	}
-	return nil
 }
 
 // newSegment creates a types.SegmentInfo with the passed ID and baseIndex, filling in

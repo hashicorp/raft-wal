@@ -225,13 +225,17 @@ type testStorage struct {
 	// lastName stores the last name argument passed to any method that accepts it
 	lastName string
 
-	metaState PersistentState
+	metaState types.PersistentState
 	stable    map[string][]byte
 
 	// errors that can be set by test to force subsequent calls to return the
 	// error.
 	loadErr, commitErr, getStableErr, setStableErr,
 	listErr, createErr, deleteErr, openErr, recoverErr error
+}
+
+func (ts *testStorage) Close() error {
+	return nil
 }
 
 func (ts *testStorage) debugDump() string {
@@ -284,14 +288,14 @@ func (ts *testStorage) recordCall(name string) {
 }
 
 // Load implements MetaStore
-func (ts *testStorage) Load(dir string) (PersistentState, error) {
+func (ts *testStorage) Load(dir string) (types.PersistentState, error) {
 	ts.recordCall("Load")
 	ts.lastDir = dir
 	return ts.metaState, ts.loadErr
 }
 
 // CommitState implements MetaStore
-func (ts *testStorage) CommitState(ps PersistentState) error {
+func (ts *testStorage) CommitState(ps types.PersistentState) error {
 	ts.recordCall("CommitState")
 	ts.metaState = ps
 

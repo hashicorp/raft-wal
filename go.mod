@@ -6,6 +6,7 @@ require (
 	github.com/Workiva/go-datastructures v1.0.53
 	github.com/alecthomas/atomic v0.1.0-alpha2
 	github.com/benbjohnson/immutable v0.4.0
+	github.com/boltdb/bolt v1.3.1
 	github.com/coreos/etcd v3.3.27+incompatible
 	github.com/google/gofuzz v1.2.0
 	github.com/hashicorp/go-hclog v0.9.1

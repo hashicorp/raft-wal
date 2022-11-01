@@ -69,20 +69,25 @@ Since this data is _generally_ small we could invent our own storage format with
 some sort of double-buffering and limit ourselves to a single page of data etc.
 But since performance is not critical for meta-data operations and size is
 extremely unlikely to get larger than a few KiB, we choose instead the pragmatic
-approach of using BoltDB for our `meta.db`.
+approach of using BoltDB for our `wal-meta.db`.
 
 The meta database contains two buckets: `stable` containing key/values persisted
-by Raft via the `StableStore` interface, and `segments` which contains the
+by Raft via the `StableStore` interface, and `wal-state` which contains the
 source-of-truth meta data about which segment files should be considered part of
 the current log.
 
-The `segments` bucket contains one record per segment file. The keys are just
-the file names (which sort lexicographically). The values are JSON encoded
-objects described by the following struct. JSON encoding is used as this is not
-performance sensitive and it's simpler to work with and more human readable.
+The `wal-state` bucket contains one record with all the state since it's only
+loaded or persisted in one atomic batch and is small. The state is just a JSON
+encoded object described by the following structs. JSON encoding is used as this
+is not performance sensitive and it's simpler to work with and more human
+readable.
 
 ```go
-type segmentInfo struct {
+type PersistentState struct {
+	NextSegmentID uint64
+	Segments      []SegmentInfo
+}
+type SegmentInfo struct {
   ID         uint64
   BaseIndex  uint64
   MinIndex   uint64
