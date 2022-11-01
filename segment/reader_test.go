@@ -96,9 +96,9 @@ func TestReader(t *testing.T) {
 
 			// Make sure we can read every value
 			for idx := tc.firstIndex; idx <= tc.wantLastIndex; idx++ {
-				gotBs, err := r.GetLog(idx)
+				got, err := r.GetLog(idx)
 				require.NoError(t, err, "error reading idx=%d", idx)
-				require.True(t, strings.HasPrefix(string(gotBs), fmt.Sprintf("%05d:", idx)), "bad value for idx=%d", idx)
+				require.True(t, strings.HasPrefix(string(got.Bs), fmt.Sprintf("%05d:", idx)), "bad value for idx=%d", idx)
 			}
 
 			// And we should _not_ read one either side

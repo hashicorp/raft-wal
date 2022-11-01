@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"sync"
 	"sync/atomic"
 
 	"github.com/hashicorp/raft-wal/types"
@@ -62,7 +63,7 @@ type Writer struct {
 	r    types.SegmentReader
 }
 
-func createFile(info types.SegmentInfo, wf types.WritableFile) (*Writer, error) {
+func createFile(info types.SegmentInfo, wf types.WritableFile, bufPool *sync.Pool) (*Writer, error) {
 	// Write header and sync
 	var hdr [fileHeaderLen]byte
 	if err := writeFileHeader(hdr[:], info); err != nil {
@@ -75,7 +76,7 @@ func createFile(info types.SegmentInfo, wf types.WritableFile) (*Writer, error) 
 		return nil, err
 	}
 
-	r, err := openReader(info, wf)
+	r, err := openReader(info, wf, bufPool)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +90,7 @@ func createFile(info types.SegmentInfo, wf types.WritableFile) (*Writer, error) 
 	return w, nil
 }
 
-func recoverFile(info types.SegmentInfo, wf types.WritableFile) (*Writer, error) {
+func recoverFile(info types.SegmentInfo, wf types.WritableFile, bufPool *sync.Pool) (*Writer, error) {
 	// Read header
 	var hdr [fileHeaderLen]byte
 	if _, err := wf.ReadAt(hdr[:], 0); err != nil {
@@ -98,7 +99,7 @@ func recoverFile(info types.SegmentInfo, wf types.WritableFile) (*Writer, error)
 	if err := validateFileHeader(hdr[:], info); err != nil {
 		return nil, err
 	}
-	r, err := openReader(info, wf)
+	r, err := openReader(info, wf, bufPool)
 	if err != nil {
 		return nil, err
 	}
@@ -276,7 +277,7 @@ func (w *Writer) Close() error {
 }
 
 // GetLog implements types.SegmentReader
-func (w *Writer) GetLog(idx uint64) ([]byte, error) {
+func (w *Writer) GetLog(idx uint64) (*types.PooledBuffer, error) {
 	return w.r.GetLog(idx)
 }
 

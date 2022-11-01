@@ -74,8 +74,8 @@ func TestConcurrentReadersAndWriter(t *testing.T) {
 			if err != nil {
 				panic("error during GetLog: " + err.Error())
 			}
-			if string(log) != "test" {
-				panic("bad log read: " + string(log))
+			if string(log.Bs) != "test" {
+				panic("bad log read: " + string(log.Bs))
 			}
 			atomic.AddUint64(&numReads, 1)
 			idx++

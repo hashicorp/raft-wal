@@ -268,9 +268,10 @@ func (w *WAL) GetLog(index uint64, log *raft.Log) error {
 	if err != nil {
 		return err
 	}
+	defer raw.Close()
 
 	// Decode the log
-	return w.codec.Decode(raw, log)
+	return w.codec.Decode(raw.Bs, log)
 }
 
 // StoreLog stores a log entry.

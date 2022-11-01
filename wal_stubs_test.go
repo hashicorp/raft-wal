@@ -449,7 +449,7 @@ func (s *testSegment) Close() error {
 	})
 }
 
-func (s *testSegment) GetLog(idx uint64) ([]byte, error) {
+func (s *testSegment) GetLog(idx uint64) (*types.PooledBuffer, error) {
 	state := s.s.Load()
 	if state.closed {
 		return nil, errors.New("closed")
@@ -462,7 +462,10 @@ func (s *testSegment) GetLog(idx uint64) ([]byte, error) {
 	if !ok {
 		return nil, ErrNotFound
 	}
-	return log.Data, nil
+	pb := &types.PooledBuffer{
+		Bs: log.Data,
+	}
+	return pb, nil
 }
 
 func (s *testSegment) Append(entries []types.LogEntry) error {

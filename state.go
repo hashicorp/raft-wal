@@ -55,7 +55,7 @@ func (s *state) Persistent() types.PersistentState {
 	}
 }
 
-func (s *state) getLog(index uint64) ([]byte, error) {
+func (s *state) getLog(index uint64) (*types.PooledBuffer, error) {
 	// Check the tail writer first
 	if s.tail != nil {
 		raw, err := s.tail.GetLog(index)

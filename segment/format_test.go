@@ -159,7 +159,9 @@ func TestFrameCodecFuzz(t *testing.T) {
 	fuzz := fuzz.New()
 
 	var len uint16
-	var buf [math.MaxUint16 + frameHeaderLen]byte
+	// Allocate an extra frameHeaderLen here because some lengths might end up
+	// needing padding which takes them just over the buffer size.
+	var buf [math.MaxUint16 + frameHeaderLen + frameHeaderLen]byte
 	var val = []byte(strings.Repeat("A Value!", math.MaxUint16/8))
 	var fh frameHeader
 	for i := 0; i < 1000; i++ {

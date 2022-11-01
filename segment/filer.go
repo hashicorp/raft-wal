@@ -6,6 +6,7 @@ package segment
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/hashicorp/raft-wal/types"
 )
@@ -19,16 +20,21 @@ const (
 // directory. It uses a VFS to abstract actual file system operations for easier
 // testing.
 type Filer struct {
-	dir string
-	vfs types.VFS
+	dir     string
+	vfs     types.VFS
+	bufPool sync.Pool
 }
 
 // NewFiler creates a Filer ready for use.
 func NewFiler(dir string, vfs types.VFS) *Filer {
-	return &Filer{
+	f := &Filer{
 		dir: dir,
 		vfs: vfs,
 	}
+	f.bufPool.New = func() any {
+		return make([]byte, minBufSize)
+	}
+	return f
 }
 
 // FileName returns the formatted file name expected for this segment.
@@ -50,7 +56,7 @@ func (f *Filer) Create(info types.SegmentInfo) (types.SegmentWriter, error) {
 		return nil, err
 	}
 
-	return createFile(info, wf)
+	return createFile(info, wf, &f.bufPool)
 }
 
 // RecoverTail is called on an unsealed segment when re-opening the WAL it
@@ -64,7 +70,7 @@ func (f *Filer) RecoverTail(info types.SegmentInfo) (types.SegmentWriter, error)
 		return nil, err
 	}
 
-	return recoverFile(info, wf)
+	return recoverFile(info, wf, &f.bufPool)
 }
 
 // Open an already sealed segment for reading. Open may validate the file's
@@ -77,7 +83,7 @@ func (f *Filer) Open(info types.SegmentInfo) (types.SegmentReader, error) {
 		return nil, err
 	}
 
-	return openReader(info, rf)
+	return openReader(info, rf, &f.bufPool)
 }
 
 // List returns the set of segment IDs currently stored. It's used by the WAL

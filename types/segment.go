@@ -130,5 +130,5 @@ type SegmentReader interface {
 
 	// GetLog returns the raw log entry bytes associated with idx. If the log
 	// doesn't exist in this segment ErrNotFound must be returned.
-	GetLog(idx uint64) ([]byte, error)
+	GetLog(idx uint64) (*PooledBuffer, error)
 }
