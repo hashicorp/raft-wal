@@ -26,6 +26,8 @@ var (
 	ErrNotFound = types.ErrNotFound
 	ErrCorrupt  = types.ErrCorrupt
 	ErrSealed   = types.ErrSealed
+
+	DefaultSegmentSize = 64 * 1024 * 1024
 )
 
 // WAL is a write-ahead log suitable for github.com/hashicorp/raft.
@@ -235,6 +237,7 @@ func (w *WAL) newSegment(ID, baseIndex uint64) types.SegmentInfo {
 		ID:        ID,
 		BaseIndex: baseIndex,
 		MinIndex:  baseIndex,
+		SizeLimit: uint32(DefaultSegmentSize),
 
 		// TODO make these configurable
 		Codec:      CodecBinaryV1,

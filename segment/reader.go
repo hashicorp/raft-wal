@@ -36,10 +36,12 @@ func openReader(info types.SegmentInfo, rf types.ReadableFile) (*Reader, error) 
 		return nil, err
 	}
 
-	return &Reader{
+	r := &Reader{
 		info: info,
 		rf:   rf,
-	}, nil
+	}
+
+	return r, nil
 }
 
 // Close implements io.Closer
@@ -91,7 +93,7 @@ func (r *Reader) readFrame(offset uint32, buf []byte) (frameHeader, []byte, erro
 
 func (r *Reader) makeBuffer() []byte {
 	// TODO consider sync.Pool for read buffers
-	return make([]byte, minBufSize)
+	return make([]byte, 4096)
 }
 
 func (r *Reader) findFrameOffset(idx uint64) (uint32, error) {
