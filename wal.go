@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/alecthomas/atomic"
 	"github.com/benbjohnson/immutable"
 
 	"github.com/hashicorp/go-hclog"
@@ -26,12 +26,14 @@ var (
 	ErrNotFound = types.ErrNotFound
 	ErrCorrupt  = types.ErrCorrupt
 	ErrSealed   = types.ErrSealed
+	ErrClosed   = types.ErrClosed
 
 	DefaultSegmentSize = 64 * 1024 * 1024
 )
 
 // WAL is a write-ahead log suitable for github.com/hashicorp/raft.
 type WAL struct {
+	closed uint32 // atomically accessed to keep it first in struct for alignment.
 	dir    string
 	codec  Codec
 	sf     types.SegmentFiler
@@ -42,7 +44,7 @@ type WAL struct {
 	// can be accessed without a lock when reading. We only support a single
 	// writer so all methods that mutate either the WAL state or append to the
 	// tail of the log must hold the writeMu until they complete all changes.
-	s atomic.Value[*state]
+	s atomic.Value
 
 	// writeMu must be held when modifying s or while appending to the tail.
 	// Although we take care never to let readers block writer, we still only
@@ -60,7 +62,6 @@ type walOpt func(*WAL)
 // recovery is attempted. If recovery is not possible an error is returned,
 // otherwise the returned *WAL is in a state ready for use.
 func Open(dir string, opts ...walOpt) (*WAL, error) {
-
 	w := &WAL{
 		dir: dir,
 	}
@@ -199,9 +200,13 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 // readers have released the old state.
 type stateTxn func(s *state) (func(), error)
 
+func (w *WAL) loadState() *state {
+	return w.s.Load().(*state)
+}
+
 // mutateState executes a stateTxn. writeLock MUST be held while calling this.
 func (w *WAL) mutateStateLocked(tx stateTxn) error {
-	s := w.s.Load()
+	s := w.loadState()
 	s.acquire()
 	defer s.release()
 
@@ -226,7 +231,7 @@ func (w *WAL) mutateStateLocked(tx stateTxn) error {
 // data within it will be performed to free old files that may have been
 // truncated concurrently.
 func (w *WAL) acquireState() (*state, func()) {
-	s := w.s.Load()
+	s := w.loadState()
 	return s, s.acquire()
 }
 
@@ -247,6 +252,9 @@ func (w *WAL) newSegment(ID, baseIndex uint64) types.SegmentInfo {
 
 // FirstIndex returns the first index written. 0 for no entries.
 func (w *WAL) FirstIndex() (uint64, error) {
+	if err := w.checkClosed(); err != nil {
+		return 0, err
+	}
 	s, release := w.acquireState()
 	defer release()
 	return s.firstIndex(), nil
@@ -254,6 +262,9 @@ func (w *WAL) FirstIndex() (uint64, error) {
 
 // LastIndex returns the last index written. 0 for no entries.
 func (w *WAL) LastIndex() (uint64, error) {
+	if err := w.checkClosed(); err != nil {
+		return 0, err
+	}
 	s, release := w.acquireState()
 	defer release()
 	return s.lastIndex(), nil
@@ -261,6 +272,9 @@ func (w *WAL) LastIndex() (uint64, error) {
 
 // GetLog gets a log entry at a given index.
 func (w *WAL) GetLog(index uint64, log *raft.Log) error {
+	if err := w.checkClosed(); err != nil {
+		return err
+	}
 	s, release := w.acquireState()
 	defer release()
 
@@ -281,6 +295,9 @@ func (w *WAL) StoreLog(log *raft.Log) error {
 
 // StoreLogs stores multiple log entries.
 func (w *WAL) StoreLogs(logs []*raft.Log) error {
+	if err := w.checkClosed(); err != nil {
+		return err
+	}
 	if len(logs) < 1 {
 		return nil
 	}
@@ -360,6 +377,9 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 // Implements raft.LogStore. Note that we only support deleting ranges that are
 // a suffix or prefix of the log.
 func (w *WAL) DeleteRange(min uint64, max uint64) error {
+	if err := w.checkClosed(); err != nil {
+		return err
+	}
 	if min > max {
 		// Empty inclusive range.
 		return nil
@@ -414,11 +434,17 @@ func (w *WAL) DeleteRange(min uint64, max uint64) error {
 
 // Set implements raft.StableStore
 func (w *WAL) Set(key []byte, val []byte) error {
+	if err := w.checkClosed(); err != nil {
+		return err
+	}
 	return w.metaDB.SetStable(key, val)
 }
 
 // Get implements raft.StableStore
 func (w *WAL) Get(key []byte) ([]byte, error) {
+	if err := w.checkClosed(); err != nil {
+		return nil, err
+	}
 	return w.metaDB.GetStable(key)
 }
 
@@ -665,4 +691,54 @@ func (w *WAL) closeSegments(toClose []io.Closer) {
 			}
 		}
 	}
+}
+
+func (w *WAL) checkClosed() error {
+	closed := atomic.LoadUint32(&w.closed)
+	if closed != 0 {
+		return ErrClosed
+	}
+	return nil
+}
+
+// Close closes all open files related to the WAL. The WAL is in an invalid
+// state and should not be used again after this is called. It is safe (though a
+// no-op) to call it multiple times and concurrent reads and writes will either
+// complete safely or get ErrClosed returned depending on sequencing. Generally
+// reads and writes should be stopped before calling this to avoid propagating
+// errors to users during shutdown but it's safe from a data-race perspective.
+func (w *WAL) Close() error {
+	// Only close once
+	old := atomic.SwapUint32(&w.closed, 1)
+	if old == 0 {
+		// Wait for writes
+		w.writeMu.Lock()
+		defer w.writeMu.Unlock()
+
+		// Replace state with nil state
+		s := w.loadState()
+		s.acquire()
+		defer s.release()
+
+		w.s.Store(&state{})
+
+		// Old state might be still in use by readers, attach closers to all open
+		// segment files.
+		toClose := make([]io.Closer, 0, s.segments.Len())
+		it := s.segments.Iterator()
+		for !it.Done() {
+			_, seg, _ := it.Next()
+			if seg.r != nil {
+				toClose = append(toClose, seg.r)
+			}
+		}
+		// Store finalizer to run once all readers are done. There can't be an
+		// existing finalizer since this was the active state read under a write
+		// lock and finalizers are only set on states that have been replaced under
+		// that same lock.
+		s.finalizer.Store(func() {
+			w.closeSegments(toClose)
+		})
+	}
+	return nil
 }

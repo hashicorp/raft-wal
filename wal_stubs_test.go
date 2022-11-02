@@ -11,10 +11,10 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/alecthomas/atomic"
 	"github.com/benbjohnson/immutable"
 	"github.com/hashicorp/raft"
 	"github.com/hashicorp/raft-wal/types"
@@ -426,11 +426,24 @@ func (ts *testStorage) assertDeletedAndClosed(t *testing.T, baseIndexes ...uint6
 	require.ElementsMatch(t, baseIndexes, deletedIndexes)
 }
 
+func (ts *testStorage) assertAllClosed(t *testing.T, wantClosed bool) {
+	t.Helper()
+	for _, s := range ts.segments {
+		closed := s.closed()
+		if wantClosed {
+			require.True(t, closed, "segment with BaseIndex=%d was not closed", s.info().BaseIndex)
+		} else {
+			require.False(t, closed, "segment with BaseIndex=%d was closed", s.info().BaseIndex)
+
+		}
+	}
+}
+
 // testSegment is a testing mock that implements segmentReader and segmentWriter
 // but just stores the "file" contents in memory.
 type testSegment struct {
 	writeLock sync.Mutex
-	s         atomic.Value[testSegmentState]
+	s         atomic.Value // testSegmentState
 
 	// limit can be set to test rolling logs
 	limit int
@@ -442,6 +455,10 @@ type testSegmentState struct {
 	closed bool
 }
 
+func (s *testSegment) loadState() testSegmentState {
+	return s.s.Load().(testSegmentState)
+}
+
 func (s *testSegment) Close() error {
 	return s.mutate(func(newState *testSegmentState) error {
 		newState.closed = true
@@ -450,7 +467,7 @@ func (s *testSegment) Close() error {
 }
 
 func (s *testSegment) GetLog(idx uint64) (*types.PooledBuffer, error) {
-	state := s.s.Load()
+	state := s.loadState()
 	if state.closed {
 		return nil, errors.New("closed")
 	}
@@ -481,7 +498,7 @@ func (s *testSegment) Append(entries []types.LogEntry) error {
 }
 
 func (s *testSegment) Sealed() (bool, uint64, error) {
-	state := s.s.Load()
+	state := s.loadState()
 	if state.closed {
 		panic("sealed on closed segment")
 	}
@@ -489,7 +506,7 @@ func (s *testSegment) Sealed() (bool, uint64, error) {
 }
 
 func (s *testSegment) LastIndex() uint64 {
-	state := s.s.Load()
+	state := s.loadState()
 	if state.closed {
 		panic("lastIndex on closed segment")
 	}
@@ -503,24 +520,24 @@ func (s *testSegment) LastIndex() uint64 {
 }
 
 func (s *testSegment) closed() bool {
-	state := s.s.Load()
+	state := s.loadState()
 	return state.closed
 }
 
 func (s *testSegment) info() types.SegmentInfo {
-	state := s.s.Load()
+	state := s.loadState()
 	return state.info
 }
 
 func (s *testSegment) numLogs() int {
-	state := s.s.Load()
+	state := s.loadState()
 	return state.logs.Len()
 }
 
 func (s *testSegment) mutate(tx func(newState *testSegmentState) error) error {
 	s.writeLock.Lock()
 	defer s.writeLock.Unlock()
-	newState := s.s.Load()
+	newState := s.loadState()
 	err := tx(&newState)
 	if err != nil {
 		return err

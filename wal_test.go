@@ -824,3 +824,55 @@ func TestConcurrentReadersAndWriter(t *testing.T) {
 	// Wait for timeout
 	<-ctx.Done()
 }
+
+func TestClose(t *testing.T) {
+	// Multiple "files" to open
+	opts := []testStorageOpt{
+		segFull(),
+		segFull(),
+		segFull(),
+		segTail(1),
+	}
+
+	ts, w, err := testOpenWAL(t, opts, nil, false)
+	require.NoError(t, err)
+
+	// ensure files are actually open
+	ts.assertAllClosed(t, false)
+
+	// Close and check
+	require.NoError(t, w.Close())
+	ts.assertAllClosed(t, true)
+
+	// Ensure all public methods now return an error
+	_, err = w.FirstIndex()
+	require.ErrorIs(t, err, ErrClosed)
+
+	_, err = w.LastIndex()
+	require.ErrorIs(t, err, ErrClosed)
+
+	var log raft.Log
+	err = w.GetLog(1, &log)
+	require.ErrorIs(t, err, ErrClosed)
+
+	err = w.StoreLog(&log)
+	require.ErrorIs(t, err, ErrClosed)
+
+	err = w.StoreLogs([]*raft.Log{&log})
+	require.ErrorIs(t, err, ErrClosed)
+
+	err = w.DeleteRange(1, 2)
+	require.ErrorIs(t, err, ErrClosed)
+
+	_, err = w.Get([]byte("foo"))
+	require.ErrorIs(t, err, ErrClosed)
+
+	_, err = w.GetUint64([]byte("foo"))
+	require.ErrorIs(t, err, ErrClosed)
+
+	err = w.Set([]byte("foo"), []byte("foo"))
+	require.ErrorIs(t, err, ErrClosed)
+
+	err = w.SetUint64([]byte("foo"), 1)
+	require.ErrorIs(t, err, ErrClosed)
+}

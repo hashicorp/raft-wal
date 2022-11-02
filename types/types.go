@@ -6,9 +6,10 @@ package types
 import "errors"
 
 var (
-	ErrNotFound = errors.New("Log entry not found")
+	ErrNotFound = errors.New("log entry not found")
 	ErrCorrupt  = errors.New("WAL is corrupt")
-	ErrSealed   = errors.New("Segment is sealed")
+	ErrSealed   = errors.New("segment is sealed")
+	ErrClosed   = errors.New("closed")
 )
 
 // LogEntry represents an entry that has already been encoded.
