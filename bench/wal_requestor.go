@@ -5,6 +5,7 @@ package main
 
 import (
 	"crypto/rand"
+	"fmt"
 	"time"
 
 	"github.com/benmathews/bench"
@@ -87,5 +88,9 @@ func (r *walAppendRequester) Request() error {
 
 // Teardown is called upon benchmark completion.
 func (r *walAppendRequester) Teardown() error {
+	m := r.wal.Metrics()
+	for k, v := range m {
+		fmt.Printf("% 15s: % 6d\n", k, v)
+	}
 	return r.wal.Close()
 }
