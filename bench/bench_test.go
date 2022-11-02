@@ -1,10 +1,9 @@
 // Copyright (c) HashiCorp, Inc
 // SPDX-License-Identifier: MPL-2.0
 
-package bench
+package main
 
 import (
-	"crypto/rand"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,14 +15,6 @@ import (
 	wal "github.com/hashicorp/raft-wal"
 	"github.com/stretchr/testify/require"
 )
-
-var randomData []byte
-var randCursor uint64
-
-func init() {
-	randomData = make([]byte, 1024*1024)
-	rand.Read(randomData)
-}
 
 func BenchmarkAppend(b *testing.B) {
 	sizes := []int{
