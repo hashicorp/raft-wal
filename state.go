@@ -24,9 +24,7 @@ type state struct {
 	// finaliser is set at most once while WAL is holding the write lock in order
 	// to provide a func that must be called when all current readers are done
 	// with this state. It's used for deferring closing and deleting old segments
-	// until we can be sure no reads are still in progress on them. alecthomas's
-	// generic version of this doesn't handle nil gracefully so use built-in
-	// package!
+	// until we can be sure no reads are still in progress on them.
 	finalizer atomic.Value
 
 	nextSegmentID uint64

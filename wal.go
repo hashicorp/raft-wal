@@ -40,6 +40,10 @@ type WAL struct {
 	metaDB types.MetaStore
 	log    hclog.Logger
 
+	// metrics is allocated once on creation then it's elements are accessed
+	// atomically after that.
+	metrics []uint64
+
 	// s is the current state of the WAL files. It is an immutable snapshot that
 	// can be accessed without a lock when reading. We only support a single
 	// writer so all methods that mutate either the WAL state or append to the
@@ -63,7 +67,8 @@ type walOpt func(*WAL)
 // otherwise the returned *WAL is in a state ready for use.
 func Open(dir string, opts ...walOpt) (*WAL, error) {
 	w := &WAL{
-		dir: dir,
+		dir:     dir,
+		metrics: make([]uint64, numMetrics),
 	}
 	// Apply options
 	for _, opt := range opts {
@@ -277,11 +282,13 @@ func (w *WAL) GetLog(index uint64, log *raft.Log) error {
 	}
 	s, release := w.acquireState()
 	defer release()
+	w.incr("log_entries_read", 1)
 
 	raw, err := s.getLog(index)
 	if err != nil {
 		return err
 	}
+	w.incr("log_entry_bytes_read", uint64(len(raw.Bs)))
 	defer raw.Close()
 
 	// Decode the log
@@ -320,7 +327,6 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 	// be not to allocate the segment file at all until now but that would be even
 	// more expensive!
 	if lastIdx == 0 && logs[0].Index > 1 {
-
 		txn := func(s *state) (func(), error) {
 			seg1, ok := s.segments.Get(1)
 			if !ok {
@@ -341,6 +347,7 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 	}
 
 	// Encode logs
+	nBytes := uint64(0)
 	encoded := make([]types.LogEntry, len(logs))
 	for i, l := range logs {
 		if lastIdx > 0 && l.Index != (lastIdx+1) {
@@ -356,10 +363,15 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 		encoded[i].Data = buf.Bytes()
 		encoded[i].Index = l.Index
 		lastIdx = l.Index
+		nBytes += uint64(len(encoded[i].Data))
 	}
 	if err := s.tail.Append(encoded); err != nil {
 		return err
 	}
+	w.incr("log_appends", 1)
+	w.incr("log_entries_written", uint64(len(encoded)))
+	w.incr("log_entry_bytes_written", nBytes)
+
 	// Check if we need to roll logs
 	sealed, indexStart, err := s.tail.Sealed()
 	if err != nil {
@@ -437,6 +449,7 @@ func (w *WAL) Set(key []byte, val []byte) error {
 	if err := w.checkClosed(); err != nil {
 		return err
 	}
+	w.incr("stable_sets", 1)
 	return w.metaDB.SetStable(key, val)
 }
 
@@ -445,6 +458,7 @@ func (w *WAL) Get(key []byte) ([]byte, error) {
 	if err := w.checkClosed(); err != nil {
 		return nil, err
 	}
+	w.incr("stable_gets", 1)
 	return w.metaDB.GetStable(key)
 }
 
@@ -478,21 +492,6 @@ func (w *WAL) GetUint64(key []byte) (uint64, error) {
 
 func (w *WAL) rotateSegmentLocked(indexStart uint64) error {
 	txn := func(newState *state) (func(), error) {
-		// TODO: we probably need a Seal method in SegmentWriter interface because
-		// the last append probably added at least one extra block past the end of
-		// the pre-allocated file which probably wasn't written out yet etc. We need
-		// to know the final number of blocks in the file to store in the metadata
-		// as well as giving...
-		//
-		// How about this:
-		//  - Replace `Full` with `Sealed` which returns a bool as well as the final number of blocks written.
-		//  - After Append we call `Sealed` and if true we pass number of blocks through here so we can update it in meta.
-		//  - Implementations can decide when they actually write out the rest of
-		//    the data, for example it would be more efficient for Append to check
-		//    if the file is "full", and if so write out the last block index and
-		//    "seal" itself as part of the since append batch so we only have to
-		//    fsync the file once. Sealed then just returns the meta data from memory.
-
 		// Mark current tail as sealed in segments
 		tail := newState.getTailInfo()
 		if tail == nil {
@@ -507,13 +506,14 @@ func (w *WAL) rotateSegmentLocked(indexStart uint64) error {
 		tail.SealTime = time.Now()
 		tail.MaxIndex = newState.tail.LastIndex()
 		tail.IndexStart = indexStart
+		w.setGauge("last_segment_age_seconds", uint64(tail.SealTime.Sub(tail.CreateTime).Seconds()))
 
 		// Update the old tail with the seal time etc.
 		newState.segments = newState.segments.Set(tail.BaseIndex, *tail)
 
 		return nil, w.createNextSegment(newState)
 	}
-
+	w.incr("segment_rotations", 1)
 	return w.mutateStateLocked(txn)
 }
 
@@ -573,14 +573,17 @@ func (w *WAL) truncateHeadLocked(newMin uint64) error {
 		toClose := make([]io.Closer, 0, 1)
 		it := newState.segments.Iterator()
 		var head *segmentState
+		nTruncated := uint64(0)
 		for !it.Done() {
 			_, seg, _ := it.Next()
 
+			maxIdx := seg.MaxIndex
 			// If the segment is the tail (unsealed) or a sealed segment that contains
 			// this new min then we've found the new head.
 			if seg.SealTime.IsZero() {
+				maxIdx = newState.lastIndex()
 				// This is the tail, check if it actually has any content to keep
-				if newState.lastIndex() >= newMin {
+				if maxIdx >= newMin {
 					head = &seg
 					break
 				}
@@ -592,11 +595,14 @@ func (w *WAL) truncateHeadLocked(newMin uint64) error {
 			toDelete[seg.ID] = seg.BaseIndex
 			toClose = append(toClose, seg.r)
 			newState.segments = newState.segments.Delete(seg.BaseIndex)
+			nTruncated += (maxIdx - seg.MinIndex + 1) // +1 becuase MaxIndex is inclusive
 		}
 
 		// There may not be any segments (left) but if there are, update the new
 		// head's MinIndex.
 		if head != nil {
+			// new
+			nTruncated += (newMin - head.MinIndex)
 			head.MinIndex = newMin
 			newState.segments = newState.segments.Set(head.BaseIndex, *head)
 		} else {
@@ -607,6 +613,7 @@ func (w *WAL) truncateHeadLocked(newMin uint64) error {
 				return nil, err
 			}
 		}
+		w.incr("head_truncations", nTruncated)
 
 		// Return a finalizer that will be called when all readers are done with the
 		// segments in the current state to close and delete old segments.
@@ -628,6 +635,7 @@ func (w *WAL) truncateTailLocked(newMax uint64) error {
 		it := newState.segments.Iterator()
 		it.Last()
 
+		nTruncated := uint64(0)
 		for !it.Done() {
 			_, seg, _ := it.Prev()
 
@@ -636,19 +644,30 @@ func (w *WAL) truncateTailLocked(newMax uint64) error {
 				break
 			}
 
+			maxIdx := seg.MaxIndex
+			if seg.SealTime.IsZero() {
+				maxIdx = newState.lastIndex()
+			}
+
 			toDelete[seg.ID] = seg.BaseIndex
 			toClose = append(toClose, seg.r)
 			newState.segments = newState.segments.Delete(seg.BaseIndex)
+			nTruncated += (maxIdx - seg.MinIndex + 1) // +1 becuase MaxIndex is inclusive
 		}
 
 		tail := newState.getTailInfo()
 		if tail != nil {
+			maxIdx := tail.MaxIndex
+
 			// Check that the tail is sealed (it won't be if we didn't need to remove
 			// the actual partial tail above).
 			if tail.SealTime.IsZero() {
 				tail.SealTime = time.Now()
+				maxIdx = newState.lastIndex()
 			}
 			// Update the MaxIndex
+
+			nTruncated += (maxIdx - newMax)
 			tail.MaxIndex = newMax
 
 			// And update the tail in the new state
@@ -659,6 +678,7 @@ func (w *WAL) truncateTailLocked(newMax uint64) error {
 		if err := w.createNextSegment(newState); err != nil {
 			return nil, err
 		}
+		w.incr("tail_truncations", nTruncated)
 
 		// Return a finalizer that will be called when all readers are done with the
 		// segments in the current state to close and delete old segments.

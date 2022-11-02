@@ -31,7 +31,7 @@ func NewFiler(dir string, vfs types.VFS) *Filer {
 		dir: dir,
 		vfs: vfs,
 	}
-	f.bufPool.New = func() any {
+	f.bufPool.New = func() interface{} {
 		return make([]byte, minBufSize)
 	}
 	return f

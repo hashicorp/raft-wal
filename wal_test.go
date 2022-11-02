@@ -408,9 +408,11 @@ func TestDeleteRange(t *testing.T) {
 		deleteMax uint64
 		expectErr string
 		// validate recovery of data
-		expectFirstIndex uint64
-		expectLastIndex  uint64
-		expectDeleted    []uint64
+		expectFirstIndex       uint64
+		expectLastIndex        uint64
+		expectDeleted          []uint64
+		expectNHeadTruncations uint64
+		expectNTailTruncations uint64
 	}{
 		{
 			name: "no-op empty range",
@@ -471,10 +473,11 @@ func TestDeleteRange(t *testing.T) {
 				segTail(10),
 			},
 			// Delete a range before the log starts
-			deleteMin:        0,
-			deleteMax:        1010,
-			expectFirstIndex: 1011,
-			expectLastIndex:  1000 + 100 + 10 - 1,
+			deleteMin:              0,
+			deleteMax:              1010,
+			expectFirstIndex:       1011,
+			expectLastIndex:        1000 + 100 + 10 - 1,
+			expectNHeadTruncations: 11,
 		},
 		{
 			name: "segment deleting head truncation",
@@ -485,11 +488,12 @@ func TestDeleteRange(t *testing.T) {
 			},
 			// Delete a range before the log starts start exactly on firstIndex to
 			// test boundary conditions.
-			deleteMin:        1000,
-			deleteMax:        1101, // Leave some entries in the tail
-			expectFirstIndex: 1102,
-			expectLastIndex:  1000 + 100 + 10 - 1,
-			expectDeleted:    []uint64{1000},
+			deleteMin:              1000,
+			deleteMax:              1101, // Leave some entries in the tail
+			expectFirstIndex:       1102,
+			expectLastIndex:        1000 + 100 + 10 - 1,
+			expectDeleted:          []uint64{1000},
+			expectNHeadTruncations: 102,
 		},
 		{
 			name: "head truncation deleting all segments",
@@ -500,11 +504,12 @@ func TestDeleteRange(t *testing.T) {
 			},
 			// Delete a range before the log starts start exactly on firstIndex to
 			// test boundary conditions.
-			deleteMin:        1000,
-			deleteMax:        1000 + 100 + 10 - 1,
-			expectFirstIndex: 0,
-			expectLastIndex:  0,
-			expectDeleted:    []uint64{1000, 1100},
+			deleteMin:              1000,
+			deleteMax:              1000 + 100 + 10 - 1,
+			expectFirstIndex:       0,
+			expectLastIndex:        0,
+			expectDeleted:          []uint64{1000, 1100},
+			expectNHeadTruncations: 110,
 		},
 		{
 			name: "non-deleting tail-truncation",
@@ -514,11 +519,12 @@ func TestDeleteRange(t *testing.T) {
 				segTail(10),
 			},
 			// Delete the last two entries from the log
-			deleteMin:        1000 + 100 + 10 - 2,
-			deleteMax:        1000 + 100 + 10 - 1,
-			expectFirstIndex: 1000,
-			expectLastIndex:  1107,
-			expectDeleted:    []uint64{},
+			deleteMin:              1000 + 100 + 10 - 2,
+			deleteMax:              1000 + 100 + 10 - 1,
+			expectFirstIndex:       1000,
+			expectLastIndex:        1107,
+			expectDeleted:          []uint64{},
+			expectNTailTruncations: 2,
 		},
 		{
 			name: "tail-deleting tail-truncation",
@@ -527,12 +533,12 @@ func TestDeleteRange(t *testing.T) {
 				segFull(),
 				segTail(10),
 			},
-			// Delete the last two entries from the log
-			deleteMin:        1051,
-			deleteMax:        1000 + 100 + 10 - 1,
-			expectFirstIndex: 1000,
-			expectLastIndex:  1050,
-			expectDeleted:    []uint64{1100},
+			deleteMin:              1051,
+			deleteMax:              1000 + 100 + 10 - 1,
+			expectFirstIndex:       1000,
+			expectLastIndex:        1050,
+			expectDeleted:          []uint64{1100},
+			expectNTailTruncations: 59,
 		},
 		{
 			name: "multi-segment deleting tail-truncation",
@@ -542,27 +548,30 @@ func TestDeleteRange(t *testing.T) {
 				segFull(),
 				segTail(10),
 			},
-			// Delete the last two entries from the log
-			deleteMin:        1051,
-			deleteMax:        1000 + 100 + 100 + 10 - 1,
-			expectFirstIndex: 1000,
-			expectLastIndex:  1050,
-			expectDeleted:    []uint64{1100, 1200},
+			deleteMin:              1051,
+			deleteMax:              1000 + 100 + 100 + 10 - 1,
+			expectFirstIndex:       1000,
+			expectLastIndex:        1050,
+			expectDeleted:          []uint64{1100, 1200},
+			expectNTailTruncations: 159,
 		},
 		{
-			name: "everything deleting tail-truncation",
+			name: "everything deleting truncation",
 			tsOpts: []testStorageOpt{
 				firstIndex(1000),
 				segFull(),
 				segFull(),
 				segTail(10),
 			},
-			// Delete the last two entries from the log
 			deleteMin:        1,
 			deleteMax:        1000 + 100 + 100 + 10 - 1,
 			expectFirstIndex: 0,
 			expectLastIndex:  0,
 			expectDeleted:    []uint64{1000, 1100, 1200},
+			// This is technically neither tail nor head since all entries are being
+			// removed but since head deletions are simpler we treat it as a head
+			// deletion.
+			expectNHeadTruncations: 210,
 		},
 	}
 
@@ -627,6 +636,11 @@ func TestDeleteRange(t *testing.T) {
 			require.NoError(t, err, "failed to find appended log %d", nextIdx)
 			require.Equal(t, int(nextIdx), int(log.Index))
 			validateLogEntry(t, &log)
+
+			// Verify the metrics recorded what we expected!
+			metrics := w.Metrics()
+			require.Equal(t, int(tc.expectNTailTruncations), int(metrics["tail_truncations"]))
+			require.Equal(t, int(tc.expectNHeadTruncations), int(metrics["head_truncations"]))
 		})
 	}
 }
