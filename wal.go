@@ -34,11 +34,13 @@ var (
 // WAL is a write-ahead log suitable for github.com/hashicorp/raft.
 type WAL struct {
 	closed uint32 // atomically accessed to keep it first in struct for alignment.
-	dir    string
-	codec  Codec
-	sf     types.SegmentFiler
-	metaDB types.MetaStore
-	log    hclog.Logger
+
+	dir         string
+	codec       Codec
+	sf          types.SegmentFiler
+	metaDB      types.MetaStore
+	log         hclog.Logger
+	segmentSize int
 
 	// metrics is allocated once on creation then it's elements are accessed
 	// atomically after that.
@@ -247,7 +249,7 @@ func (w *WAL) newSegment(ID, baseIndex uint64) types.SegmentInfo {
 		ID:        ID,
 		BaseIndex: baseIndex,
 		MinIndex:  baseIndex,
-		SizeLimit: uint32(DefaultSegmentSize),
+		SizeLimit: uint32(w.segmentSize),
 
 		// TODO make these configurable
 		Codec:      CodecBinaryV1,

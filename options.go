@@ -45,6 +45,13 @@ func WithLogger(logger hclog.Logger) walOpt {
 	}
 }
 
+// WithSegmentSize is an option that allows a custom segmentSize to be set.
+func WithSegmentSize(size int) walOpt {
+	return func(w *WAL) {
+		w.segmentSize = size
+	}
+}
+
 func (w *WAL) applyDefaultsAndValidate() error {
 	// Check if an external codec has been used that it's not using a reserved ID.
 	if w.codec != nil && w.codec.ID() < FirstExternalCodecID {
@@ -66,6 +73,9 @@ func (w *WAL) applyDefaultsAndValidate() error {
 	}
 	if w.metaDB == nil {
 		w.metaDB = &metadb.BoltMetaDB{}
+	}
+	if w.segmentSize == 0 {
+		w.segmentSize = DefaultSegmentSize
 	}
 	return nil
 }

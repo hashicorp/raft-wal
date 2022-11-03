@@ -7,9 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/benmathews/bench"
+	"github.com/hashicorp/raft-wal/metadb"
 )
 
 type opts struct {
@@ -26,7 +29,7 @@ func main() {
 	var o opts
 
 	flag.StringVar(&o.version, "v", "wal", "version to test 'wal' or 'bolt'")
-	flag.StringVar(&o.dir, "dir", "", "dir to write to. If empty will create a tmp dir.")
+	flag.StringVar(&o.dir, "dir", "", "dir to write to. If empty will create a tmp dir. If not empty the dir will delete any existing WAL files present!")
 	flag.IntVar(&o.rate, "rate", 10, "append rate target per second")
 	flag.DurationVar(&o.duration, "t", 10*time.Second, "duration of the test")
 	flag.IntVar(&o.logSize, "s", 128, "size of each log entry appended")
@@ -42,21 +45,27 @@ func main() {
 
 		defer os.RemoveAll(tmpDir)
 		o.dir = tmpDir
-	}
-
-	var r bench.RequesterFactory
-	switch o.version {
-	case "wal":
-		r = &walAppendRequesterFactory{
-			Dir:       o.dir,
-			LogSize:   o.logSize,
-			BatchSize: o.batchSize,
+	} else {
+		// Delete metadb and any segment files present
+		files, err := os.ReadDir(o.dir)
+		if err != nil {
+			panic(err)
 		}
-	default:
-		fmt.Printf("invalid v: %q. 'wal' and 'bolt' are the supported types", o.version)
-		os.Exit(1)
+		for _, f := range files {
+			if f.IsDir() {
+				continue
+			}
+			if strings.HasSuffix(f.Name(), ".wal") || f.Name() == metadb.FileName || f.Name() == "raft.db" {
+				os.RemoveAll(filepath.Join(o.dir, f.Name()))
+			}
+		}
 	}
-
+	r := &appendRequesterFactory{
+		Dir:       o.dir,
+		Version:   o.version,
+		LogSize:   o.logSize,
+		BatchSize: o.batchSize,
+	}
 	benchmark := bench.NewBenchmark(r, uint64(o.rate), 1, o.duration, 1)
 	summary, err := benchmark.Run()
 	if err != nil {
