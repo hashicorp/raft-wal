@@ -22,6 +22,7 @@ type opts struct {
 	duration  time.Duration
 	logSize   int
 	batchSize int
+	segSize   int
 	preLoadN  int
 }
 
@@ -34,6 +35,7 @@ func main() {
 	flag.DurationVar(&o.duration, "t", 10*time.Second, "duration of the test")
 	flag.IntVar(&o.logSize, "s", 128, "size of each log entry appended")
 	flag.IntVar(&o.batchSize, "n", 1, "number of logs per append batch")
+	flag.IntVar(&o.segSize, "seg", 64, "segment size in MB")
 	flag.IntVar(&o.preLoadN, "preload", 0, "number of logs to append and then truncate before we start")
 	flag.Parse()
 
@@ -65,6 +67,7 @@ func main() {
 		Version:   o.version,
 		LogSize:   o.logSize,
 		BatchSize: o.batchSize,
+		SegSize:   o.segSize,
 		Preload:   o.preLoadN,
 	}
 	benchmark := bench.NewBenchmark(r, uint64(o.rate), 1, o.duration, 1)
@@ -74,6 +77,7 @@ func main() {
 	}
 
 	fmt.Println(summary)
-	outFile := fmt.Sprintf("bench-result-%s-s%d-n%d-r%d-pre%d.txt", o.duration, o.logSize, o.batchSize, o.rate, o.preLoadN)
+	outFile := fmt.Sprintf("bench-result-%s-s%d-n%d-r%d-seg%dm-pre%d-%s.txt",
+		o.duration, o.logSize, o.batchSize, o.rate, o.segSize, o.preLoadN, o.version)
 	summary.GenerateLatencyDistribution(nil, outFile)
 }

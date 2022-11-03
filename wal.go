@@ -226,8 +226,16 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 // the new state. If a non-nil finalizer func is returned it will be atomically
 // attached to the old state after it's been replaced but before the write lock
 // is released. The finalizer will be called exactly once when all current
-// readers have released the old state.
-type stateTxn func(s *state) (func(), error)
+// readers have released the old state. If the transaction func returns a
+// non-nil postCommit it is executed after the new state has been committed to
+// metaDB. It may mutate the state further (captured by closure) before it is
+// atomically committed in memory but the update won't be persisted to disk in
+// this transaction. This is used where we need sequencing between committing
+// meta and creating and opening a new file. Both need to happen in memory in
+// one transaction but the disk commit isn't at the end! If postCommit returns
+// an error, the state is not updated in memory and the error is returned to the
+// mutate caller.
+type stateTxn func(s *state) (finalizer func(), postCommit func() error, err error)
 
 func (w *WAL) loadState() *state {
 	return w.s.Load().(*state)
@@ -240,7 +248,7 @@ func (w *WAL) mutateStateLocked(tx stateTxn) error {
 	defer s.release()
 
 	newS := s.clone()
-	fn, err := tx(&newS)
+	fn, postCommit, err := tx(&newS)
 	if err != nil {
 		return err
 	}
@@ -248,6 +256,12 @@ func (w *WAL) mutateStateLocked(tx stateTxn) error {
 	// Commit updates to meta
 	if err := w.metaDB.CommitState(newS.Persistent()); err != nil {
 		return err
+	}
+
+	if postCommit != nil {
+		if err := postCommit(); err != nil {
+			return err
+		}
 	}
 
 	w.s.Store(&newS)
@@ -360,17 +374,17 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 	// be not to allocate the segment file at all until now but that would be even
 	// more expensive!
 	if lastIdx == 0 && logs[0].Index > 1 {
-		txn := func(s *state) (func(), error) {
+		txn := func(s *state) (func(), func() error, error) {
 			seg1, ok := s.segments.Get(1)
 			if !ok {
 				// Can't happen!
-				return nil, fmt.Errorf("invalid internal state! %w", ErrCorrupt)
+				return nil, nil, fmt.Errorf("invalid internal state! %w", ErrCorrupt)
 			}
 			// Note that we're mutating a copy of types.SegmentInfo since it's stored by value
 			// not reference.
 			seg1.MinIndex = logs[0].Index
 			s.segments = s.segments.Set(seg1.BaseIndex, seg1)
-			return nil, nil
+			return nil, nil, nil
 		}
 
 		if err := w.mutateStateLocked(txn); err != nil {
@@ -561,12 +575,12 @@ func (w *WAL) runRotate() {
 }
 
 func (w *WAL) rotateSegmentLocked(indexStart uint64) error {
-	txn := func(newState *state) (func(), error) {
+	txn := func(newState *state) (func(), func() error, error) {
 		// Mark current tail as sealed in segments
 		tail := newState.getTailInfo()
 		if tail == nil {
 			// Can't happen
-			return nil, fmt.Errorf("no tail found during rotate")
+			return nil, nil, fmt.Errorf("no tail found during rotate")
 		}
 
 		// Note that tail is a copy since it's a value type. Even though this is a
@@ -581,7 +595,8 @@ func (w *WAL) rotateSegmentLocked(indexStart uint64) error {
 		// Update the old tail with the seal time etc.
 		newState.segments = newState.segments.Set(tail.BaseIndex, *tail)
 
-		return nil, w.createNextSegment(newState)
+		post, err := w.createNextSegment(newState)
+		return nil, post, err
 	}
 	w.incr("segment_rotations", 1)
 	return w.mutateStateLocked(txn)
@@ -593,7 +608,7 @@ func (w *WAL) rotateSegmentLocked(indexStart uint64) error {
 // segments that should be in the log, all must be sealed at this point. The new
 // segment's baseIndex will be the current last-segment's MaxIndex (or 0 if
 // non).
-func (w *WAL) createNextSegment(newState *state) error {
+func (w *WAL) createNextSegment(newState *state) (func() error, error) {
 	// Find existing sealed tail
 	tail := newState.getTailInfo()
 
@@ -612,47 +627,32 @@ func (w *WAL) createNextSegment(newState *state) error {
 	newState.segments = newState.segments.Set(newTail.BaseIndex, ss)
 	newState.nextSegmentID++
 
-	// Create the file in parallel since we will recover based on the committed
-	// state in meta db either re-creating or deleting unnecessary files as needed
-	// after a crash. This parallelizes the fsyncs to different files to minimize
-	// latency blocking next write.
-	type createReturn struct {
-		w   types.SegmentWriter
-		err error
-	}
-	ch := make(chan createReturn)
-	go func() {
+	// We're ready to commit now! Return a postCommit that will actually create
+	// the segment file once meta is persisted. We don't do it in parallel because
+	// we don't want to persist a file with an ID before that ID is durably stored
+	// in case the metaDB write doesn't happen.
+	post := func() error {
 		// Now create the new segment for writing.
 		sw, err := w.sf.Create(newTail)
-		ch <- createReturn{sw, err}
-	}()
+		if err != nil {
+			return err
+		}
+		newState.tail = sw
 
-	// Commit the new meta to disk before we create new files so that we never
-	// leave a file with ID >= the persisted nextSegmentID lying around.
-	if err := w.metaDB.CommitState(newState.Persistent()); err != nil {
-		return err
+		// Also cache the reader/log getter which is also the writer. We don't bother
+		// reopening read only since we assume we have exclusive access anyway and
+		// only use this read-only interface once the segment is sealed.
+		ss.r = newState.tail
+
+		// We need to re-insert it since newTail is a copy not a reference
+		newState.segments = newState.segments.Set(newTail.BaseIndex, ss)
+		return nil
 	}
-
-	// Now create the new segment for writing.
-	cr := <-ch
-	if cr.err != nil {
-		return cr.err
-	}
-	newState.tail = cr.w
-
-	// Also cache the reader/log getter which is also the writer. We don't bother
-	// reopening read only since we assume we have exclusive access anyway and
-	// only use this read-only interface once the segment is sealed.
-	ss.r = newState.tail
-
-	// We need to re-insert it since newTail is a copy not a reference
-	newState.segments = newState.segments.Set(newTail.BaseIndex, ss)
-
-	return nil
+	return post, nil
 }
 
 func (w *WAL) truncateHeadLocked(newMin uint64) error {
-	txn := stateTxn(func(newState *state) (func(), error) {
+	txn := stateTxn(func(newState *state) (func(), func() error, error) {
 		// Iterate the segments to find any that are entirely deleted.
 		toDelete := make(map[uint64]uint64)
 		toClose := make([]io.Closer, 0, 1)
@@ -685,6 +685,7 @@ func (w *WAL) truncateHeadLocked(newMin uint64) error {
 
 		// There may not be any segments (left) but if there are, update the new
 		// head's MinIndex.
+		var postCommit func() error
 		if head != nil {
 			// new
 			nTruncated += (newMin - head.MinIndex)
@@ -694,9 +695,11 @@ func (w *WAL) truncateHeadLocked(newMin uint64) error {
 			// If there is no head any more, then there is no tail either! We should
 			// create a new blank one ready for use when we next append like we do
 			// during initialization.
-			if err := w.createNextSegment(newState); err != nil {
-				return nil, err
+			pc, err := w.createNextSegment(newState)
+			if err != nil {
+				return nil, nil, err
 			}
+			postCommit = pc
 		}
 		w.incr("head_truncations", nTruncated)
 
@@ -706,14 +709,14 @@ func (w *WAL) truncateHeadLocked(newMin uint64) error {
 			w.closeSegments(toClose)
 			w.deleteSegments(toDelete)
 		}
-		return fin, nil
+		return fin, postCommit, nil
 	})
 
 	return w.mutateStateLocked(txn)
 }
 
 func (w *WAL) truncateTailLocked(newMax uint64) error {
-	txn := stateTxn(func(newState *state) (func(), error) {
+	txn := stateTxn(func(newState *state) (func(), func() error, error) {
 		// Reverse iterate the segments to find any that are entirely deleted.
 		toDelete := make(map[uint64]uint64)
 		toClose := make([]io.Closer, 0, 1)
@@ -760,8 +763,9 @@ func (w *WAL) truncateTailLocked(newMax uint64) error {
 		}
 
 		// Create the new tail segment
-		if err := w.createNextSegment(newState); err != nil {
-			return nil, err
+		pc, err := w.createNextSegment(newState)
+		if err != nil {
+			return nil, nil, err
 		}
 		w.incr("tail_truncations", nTruncated)
 
@@ -771,7 +775,7 @@ func (w *WAL) truncateTailLocked(newMax uint64) error {
 			w.closeSegments(toClose)
 			w.deleteSegments(toDelete)
 		}
-		return fin, nil
+		return fin, pc, nil
 	})
 
 	return w.mutateStateLocked(txn)

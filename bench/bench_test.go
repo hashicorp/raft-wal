@@ -34,7 +34,8 @@ func BenchmarkAppend(b *testing.B) {
 	for i, s := range sizes {
 		for _, bSize := range batchSizes {
 			b.Run(fmt.Sprintf("entrySize=%s/batchSize=%d/v=WAL", sizeNames[i], bSize), func(b *testing.B) {
-				ls := openWAL(b)
+				ls, done := openWAL(b)
+				defer done()
 				runAppendBench(b, ls, s, bSize)
 			})
 			b.Run(fmt.Sprintf("entrySize=%s/batchSize=%d/v=Bolt", sizeNames[i], bSize), func(b *testing.B) {
@@ -45,15 +46,15 @@ func BenchmarkAppend(b *testing.B) {
 	}
 }
 
-func openWAL(b *testing.B) *wal.WAL {
+func openWAL(b *testing.B) (*wal.WAL, func()) {
 	tmpDir, err := os.MkdirTemp("", "raft-wal-bench-*")
 	require.NoError(b, err)
-	defer os.RemoveAll(tmpDir)
 
-	ls, err := wal.Open(tmpDir)
+	// Force every 1k append to create a new segment to profile segment rotation.
+	ls, err := wal.Open(tmpDir, wal.WithSegmentSize(512))
 	require.NoError(b, err)
 
-	return ls
+	return ls, func() { os.RemoveAll(tmpDir) }
 }
 
 func openBolt(b *testing.B) *raftboltdb.BoltStore {
@@ -103,7 +104,8 @@ func BenchmarkGetLogs(b *testing.B) {
 		"1m",
 	}
 	for i, s := range sizes {
-		wLs := openWAL(b)
+		wLs, done := openWAL(b)
+		defer done()
 		populateLogs(b, wLs, s, 128) // fixed 128 byte logs
 
 		bLs := openBolt(b)

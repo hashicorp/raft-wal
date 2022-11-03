@@ -33,6 +33,7 @@ type appendRequesterFactory struct {
 	Version   string
 	LogSize   int
 	BatchSize int
+	SegSize   int
 	Preload   int
 }
 
@@ -47,8 +48,7 @@ func (f *appendRequesterFactory) GetRequester(number uint64) bench.Requester {
 	switch f.Version {
 	case "wal":
 		fn = func() (raft.LogStore, error) {
-			// Use small 1MiB segments for now to show effects of rotating more quickly.
-			return wal.Open(f.Dir, wal.WithSegmentSize(64*1024*1024))
+			return wal.Open(f.Dir, wal.WithSegmentSize(f.SegSize*1024*1024))
 		}
 	case "bolt":
 		fn = func() (raft.LogStore, error) {

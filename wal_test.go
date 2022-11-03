@@ -255,75 +255,75 @@ func TestStoreLogs(t *testing.T) {
 		expectFirstIndex uint64
 		expectLastIndex  uint64
 	}{
-		// {
-		// 	name:             "empty log append",
-		// 	store:            makeRaftLogs(1, 5),
-		// 	expectFirstIndex: 1,
-		// 	expectLastIndex:  5,
-		// },
-		// {
-		// 	name:             "empty log append, start from non-zero",
-		// 	store:            makeRaftLogs(10000, 5),
-		// 	expectFirstIndex: 10000,
-		// 	expectLastIndex:  10004,
-		// },
-		// {
-		// 	name: "existing segment log append",
-		// 	tsOpts: []testStorageOpt{
-		// 		segTail(10),
-		// 	},
-		// 	store:            makeRaftLogs(11, 5),
-		// 	expectFirstIndex: 1,
-		// 	expectLastIndex:  15,
-		// },
-		// {
-		// 	name: "existing multi segment log append",
-		// 	tsOpts: []testStorageOpt{
-		// 		segFull(),
-		// 		segFull(),
-		// 		segTail(10),
-		// 	},
-		// 	store:            makeRaftLogs(211, 5),
-		// 	expectFirstIndex: 1,
-		// 	expectLastIndex:  215,
-		// },
-		// {
-		// 	name: "out of order",
-		// 	tsOpts: []testStorageOpt{
-		// 		segTail(10),
-		// 	},
-		// 	// Append logs starting from 100 when tail is currently 10
-		// 	store:     makeRaftLogs(100, 5),
-		// 	expectErr: "non-monotonic log entries",
-		// },
-		// {
-		// 	name: "out of sequence",
-		// 	tsOpts: []testStorageOpt{
-		// 		segTail(10),
-		// 	},
-		// 	// Append logs starting from 10 but not with gaps internally
-		// 	store:     makeRaftLogsSparse(10, 11, 14, 15),
-		// 	expectErr: "non-monotonic log entries",
-		// },
-		// {
-		// 	name: "rotate when full",
-		// 	tsOpts: []testStorageOpt{
-		// 		segTail(99),
-		// 	},
-		// 	store:            makeRaftLogs(100, 5),
-		// 	expectFirstIndex: 1,
-		// 	expectLastIndex:  104,
-		// },
-		// {
-		// 	name: "rotate and append more",
-		// 	tsOpts: []testStorageOpt{
-		// 		segTail(99),
-		// 	},
-		// 	store:            makeRaftLogs(100, 5),
-		// 	store2:           makeRaftLogs(105, 5),
-		// 	expectFirstIndex: 1,
-		// 	expectLastIndex:  109,
-		// },
+		{
+			name:             "empty log append",
+			store:            makeRaftLogs(1, 5),
+			expectFirstIndex: 1,
+			expectLastIndex:  5,
+		},
+		{
+			name:             "empty log append, start from non-zero",
+			store:            makeRaftLogs(10000, 5),
+			expectFirstIndex: 10000,
+			expectLastIndex:  10004,
+		},
+		{
+			name: "existing segment log append",
+			tsOpts: []testStorageOpt{
+				segTail(10),
+			},
+			store:            makeRaftLogs(11, 5),
+			expectFirstIndex: 1,
+			expectLastIndex:  15,
+		},
+		{
+			name: "existing multi segment log append",
+			tsOpts: []testStorageOpt{
+				segFull(),
+				segFull(),
+				segTail(10),
+			},
+			store:            makeRaftLogs(211, 5),
+			expectFirstIndex: 1,
+			expectLastIndex:  215,
+		},
+		{
+			name: "out of order",
+			tsOpts: []testStorageOpt{
+				segTail(10),
+			},
+			// Append logs starting from 100 when tail is currently 10
+			store:     makeRaftLogs(100, 5),
+			expectErr: "non-monotonic log entries",
+		},
+		{
+			name: "out of sequence",
+			tsOpts: []testStorageOpt{
+				segTail(10),
+			},
+			// Append logs starting from 10 but not with gaps internally
+			store:     makeRaftLogsSparse(10, 11, 14, 15),
+			expectErr: "non-monotonic log entries",
+		},
+		{
+			name: "rotate when full",
+			tsOpts: []testStorageOpt{
+				segTail(99),
+			},
+			store:            makeRaftLogs(100, 5),
+			expectFirstIndex: 1,
+			expectLastIndex:  104,
+		},
+		{
+			name: "rotate and append more",
+			tsOpts: []testStorageOpt{
+				segTail(99),
+			},
+			store:            makeRaftLogs(100, 5),
+			store2:           makeRaftLogs(105, 5),
+			expectFirstIndex: 1,
+			expectLastIndex:  109,
+		},
 		{
 			name: "empty rotate and append more",
 			// Start from empty (this had a bug initially since open didn't initialize
