@@ -33,6 +33,7 @@ type appendRequesterFactory struct {
 	Version   string
 	LogSize   int
 	BatchSize int
+	Preload   int
 }
 
 // GetRequester returns a new Requester, called for each Benchmark
@@ -47,7 +48,7 @@ func (f *appendRequesterFactory) GetRequester(number uint64) bench.Requester {
 	case "wal":
 		fn = func() (raft.LogStore, error) {
 			// Use small 1MiB segments for now to show effects of rotating more quickly.
-			return wal.Open(f.Dir, wal.WithSegmentSize(1024*1024))
+			return wal.Open(f.Dir, wal.WithSegmentSize(64*1024*1024))
 		}
 	case "bolt":
 		fn = func() (raft.LogStore, error) {
@@ -61,6 +62,7 @@ func (f *appendRequesterFactory) GetRequester(number uint64) bench.Requester {
 		dir:       f.Dir,
 		logSize:   f.LogSize,
 		batchSize: f.BatchSize,
+		preload:   f.Preload,
 		newStore:  fn,
 	}
 }
@@ -69,6 +71,7 @@ func (f *appendRequesterFactory) GetRequester(number uint64) bench.Requester {
 type appendRequester struct {
 	dir                string
 	logSize, batchSize int
+	preload            int
 	batch              []*raft.Log
 	index              uint64
 	newStore           func() (raft.LogStore, error)
@@ -95,6 +98,43 @@ func (r *appendRequester) Setup() error {
 		}
 	}
 	r.index = 1
+
+	if r.preload > 0 {
+		// Write lots of big records and then delete them again. We'll use batches
+		// of 1000 1024 byte records for now to speed things up a bit.
+		preBatch := make([]*raft.Log, 0, 1000)
+		for r.index <= uint64(r.preload) {
+			preBatch = append(preBatch, &raft.Log{Index: r.index, Data: randomData[:1024]})
+			r.index++
+			if len(preBatch) == 1000 {
+				fmt.Printf("Preloading up to index %d\n", r.index)
+				err := r.store.StoreLogs(preBatch)
+				if err != nil {
+					return err
+				}
+				preBatch = preBatch[:0]
+			}
+		}
+		if len(preBatch) > 0 {
+			fmt.Printf("Preloading up to index %d\n", r.index)
+			err := r.store.StoreLogs(preBatch)
+			if err != nil {
+				return err
+			}
+		}
+		// Now truncate all, but one of those back out. We leave one to be more
+		// realistic since raft always leaves some recent logs. Note r.index is
+		// already at the next index after the one we just wrote so the inclusive
+		// delete range is not one but two before that to leave the one before
+		// intact.
+		fmt.Printf("Truncating 1 - %d\n", r.index-2)
+		err := r.store.DeleteRange(1, r.index-2)
+		if err != nil {
+			return err
+		}
+		r.dumpStats()
+	}
+
 	return nil
 }
 
@@ -112,13 +152,18 @@ type metricer interface {
 	Metrics() map[string]uint64
 }
 
-// Teardown is called upon benchmark completion.
-func (r *appendRequester) Teardown() error {
+func (r *appendRequester) dumpStats() {
 	if m, ok := r.store.(metricer); ok {
+		fmt.Println("== METRICS ==========")
 		for k, v := range m.Metrics() {
 			fmt.Printf("% 25s: % 15d\n", k, v)
 		}
 	}
+}
+
+// Teardown is called upon benchmark completion.
+func (r *appendRequester) Teardown() error {
+	r.dumpStats()
 	if c, ok := r.store.(io.Closer); ok {
 		return c.Close()
 	}

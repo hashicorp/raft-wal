@@ -1,5 +1,5 @@
 bench
-bench-result.txt
+bench-result*
 uncorrected_bench-result.txt
 bench.test
 profile.out
