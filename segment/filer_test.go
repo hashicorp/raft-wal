@@ -4,9 +4,7 @@
 package segment
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -38,12 +36,6 @@ func TestSegmentBasics(t *testing.T) {
 	// being created and written to).
 	require.False(t, w.(*Writer).wf.(*testWritableFile).dirty)
 
-	// To really test Create worked, we have to use OpenReader to re-open and
-	// validate the header
-	r, err := f.Open(seg0)
-	require.NoError(t, err)
-	r.Close() // Done with this for now.
-
 	// Append to writer
 	err = w.Append([]types.LogEntry{{Index: 1, Data: []byte("one")}})
 	require.NoError(t, err)
@@ -51,6 +43,12 @@ func TestSegmentBasics(t *testing.T) {
 	// Should have been "fsynced"
 	file := testFileFor(t, w)
 	require.False(t, file.dirty)
+
+	// Now we've committed to file we should be able to open and read a valid file
+	// header.
+	r, err := f.Open(seg0)
+	require.NoError(t, err)
+	r.Close() // Done with this for now.
 
 	// Should be able to read that from tail (can't use "open" yet to read it
 	// separately since it's not a sealed segment).
@@ -98,122 +96,152 @@ func TestRecovery(t *testing.T) {
 		wantLastIndex      uint64
 		wantSealed         bool
 	}{
+		// {
+		// 	name:               "recover empty",
+		// 	numPreviousEntries: 0,
+		// 	appendEntrySizes:   []int{},
+		// 	// no corruption (clean shutdown)
+		// 	wantLastIndex: 0,
+		// },
+		// {
+		// 	name:               "recover first batch",
+		// 	numPreviousEntries: 0,
+		// 	appendEntrySizes:   []int{10},
+		// 	// no corruption (clean shutdown)
+		// 	wantLastIndex: 1,
+		// },
+		// {
+		// 	name:               "recover later batch",
+		// 	numPreviousEntries: 10,
+		// 	appendEntrySizes:   []int{10},
+		// 	// no corruption (clean shutdown)
+		// 	wantLastIndex: 11,
+		// },
+		// {
+		// 	name:               "recover multi-entry batch",
+		// 	numPreviousEntries: 10,
+		// 	appendEntrySizes:   []int{10, 10, 10, 10},
+		// 	// no corruption (clean shutdown)
+		// 	wantLastIndex: 14,
+		// },
+		// {
+		// 	name:               "missing end of commit",
+		// 	numPreviousEntries: 10,
+		// 	appendEntrySizes:   []int{10, 10, 10, 10},
+		// 	corrupt: func(twf *testWritableFile) error {
+		// 		// zero out just the very last commit frame
+		// 		_, err := twf.WriteAt(bytes.Repeat([]byte{0}, frameHeaderLen), int64(twf.maxWritten-frameHeaderLen))
+		// 		return err
+		// 	},
+		// 	// should recover back to before the append
+		// 	wantLastIndex: 10,
+		// },
+		// {
+		// 	name:               "partial initial commit",
+		// 	numPreviousEntries: 0,
+		// 	appendEntrySizes:   []int{10, 10, 10, 10},
+		// 	corrupt: func(twf *testWritableFile) error {
+		// 		// corrupt a byte in the last commit
+		// 		_, err := twf.WriteAt([]byte{127}, int64(fileHeaderLen+frameHeaderLen))
+		// 		return err
+		// 	},
+		// 	// should recover back to before the append
+		// 	wantLastIndex: 0,
+		// },
+		// {
+		// 	name:               "torn write with some data in middle of commit missing",
+		// 	numPreviousEntries: 10,
+		// 	appendEntrySizes:   []int{10, 10, 10, 10},
+		// 	corrupt: func(twf *testWritableFile) error {
+		// 		// zero out one byte from somewhere near the start of the commit (but
+		// 		// not in the frameheader)
+		// 		_, err := twf.WriteAt([]byte{0}, int64(twf.lastSyncStart+frameHeaderLen+2))
+		// 		return err
+		// 	},
+		// 	// should recover back to before the append
+		// 	wantLastIndex: 10,
+		// },
+		// {
+		// 	name:               "torn write with header in commit corrupt",
+		// 	numPreviousEntries: 10,
+		// 	appendEntrySizes:   []int{10, 10, 10, 10},
+		// 	corrupt: func(twf *testWritableFile) error {
+		// 		// We rely on knowing the sizes of the entries in this case which were
+		// 		// header + 10 byte + 6 bytes padding each. We corrupt not the first but
+		// 		// second header. We'll set the typ byte to an invalid value.
+		// 		_, err := twf.WriteAt([]byte{65}, int64(twf.lastSyncStart+encodedFrameSize(10)))
+		// 		return err
+		// 	},
+		// 	// should recover back to before the append
+		// 	wantLastIndex: 10,
+		// },
+		// {
+		// 	name:               "empty file",
+		// 	numPreviousEntries: 0,
+		// 	appendEntrySizes:   []int{},
+		// 	corrupt: func(twf *testWritableFile) error {
+		// 		// replace buf with an zero-capacity buffer to simulate zero length file
+		// 		twf.buf.Store([]byte{})
+		// 		twf.dirty = false
+		// 		twf.maxWritten = 0
+		// 		return nil
+		// 	},
+		// 	// should throw an EOF error on recover as there is no file header to verify
+		// 	wantErr: io.EOF.Error(),
+		// },
 		{
-			name:               "recover empty",
-			numPreviousEntries: 0,
-			appendEntrySizes:   []int{},
-			// no corruption (clean shutdown)
-			wantLastIndex: 0,
-		},
-		{
-			name:               "recover first batch",
-			numPreviousEntries: 0,
+			name: "bad segment header, valid commit",
+			// This makes two commits which means header must have been committed so
+			// must be validated.
+			numPreviousEntries: 1,
 			appendEntrySizes:   []int{10},
-			// no corruption (clean shutdown)
-			wantLastIndex: 1,
-		},
-		{
-			name:               "recover later batch",
-			numPreviousEntries: 10,
-			appendEntrySizes:   []int{10},
-			// no corruption (clean shutdown)
-			wantLastIndex: 11,
-		},
-		{
-			name:               "recover multi-entry batch",
-			numPreviousEntries: 10,
-			appendEntrySizes:   []int{10, 10, 10, 10},
-			// no corruption (clean shutdown)
-			wantLastIndex: 14,
-		},
-		{
-			name:               "missing end of commit",
-			numPreviousEntries: 10,
-			appendEntrySizes:   []int{10, 10, 10, 10},
-			corrupt: func(twf *testWritableFile) error {
-				// zero out just the very last commit frame
-				_, err := twf.WriteAt(bytes.Repeat([]byte{0}, frameHeaderLen), int64(twf.maxWritten-frameHeaderLen))
-				return err
-			},
-			// should recover back to before the append
-			wantLastIndex: 10,
-		},
-		{
-			name:               "partial initial commit",
-			numPreviousEntries: 0,
-			appendEntrySizes:   []int{10, 10, 10, 10},
-			corrupt: func(twf *testWritableFile) error {
-				// corrupt a byte in the last commit
-				_, err := twf.WriteAt([]byte{127}, int64(fileHeaderLen+frameHeaderLen))
-				return err
-			},
-			// should recover back to before the append
-			wantLastIndex: 0,
-		},
-		{
-			name:               "torn write with some data in middle of commit missing",
-			numPreviousEntries: 10,
-			appendEntrySizes:   []int{10, 10, 10, 10},
-			corrupt: func(twf *testWritableFile) error {
-				// zero out one byte from somewhere near the start of the commit (but
-				// not in the frameheader)
-				_, err := twf.WriteAt([]byte{0}, int64(twf.lastSyncStart+frameHeaderLen+2))
-				return err
-			},
-			// should recover back to before the append
-			wantLastIndex: 10,
-		},
-		{
-			name:               "torn write with header in commit corrupt",
-			numPreviousEntries: 10,
-			appendEntrySizes:   []int{10, 10, 10, 10},
-			corrupt: func(twf *testWritableFile) error {
-				// We rely on knowing the sizes of the entries in this case which were
-				// header + 10 byte + 6 bytes padding each. We corrupt not the first but
-				// second header. We'll set the typ byte to an invalid value.
-				_, err := twf.WriteAt([]byte{65}, int64(twf.lastSyncStart+encodedFrameSize(10)))
-				return err
-			},
-			// should recover back to before the append
-			wantLastIndex: 10,
-		},
-		{
-			name:               "empty file",
-			numPreviousEntries: 0,
-			appendEntrySizes:   []int{},
-			corrupt: func(twf *testWritableFile) error {
-				// replace buf with an zero-capacity buffer to simulate zero length file
-				twf.buf.Store([]byte{})
-				twf.dirty = false
-				twf.maxWritten = 0
-				return nil
-			},
-			// should throw an EOF error on recover as there is no file header to verify
-			wantErr: io.EOF.Error(),
-		},
-		{
-			name:               "bad segment header",
-			numPreviousEntries: 0,
-			appendEntrySizes:   []int{},
 			corrupt: func(twf *testWritableFile) error {
 				// twiddle the magic value
 				_, err := twf.WriteAt([]byte{123}, 0)
 				return err
 			},
-			// should throw an EOF error on recover as there is no file header to verify
 			wantErr: "corrupt",
 		},
 		{
-			name:               "bad segment header BaseIndex",
-			numPreviousEntries: 0,
-			appendEntrySizes:   []int{},
+			name: "bad segment header BaseIndex, valid commit",
+			// This makes two commits which means header must have been committed so
+			// must be validated.
+			numPreviousEntries: 1,
+			appendEntrySizes:   []int{10},
 			corrupt: func(twf *testWritableFile) error {
 				// twiddle the base index
 				_, err := twf.WriteAt([]byte{123}, 8)
 				return err
 			},
-			// should throw an EOF error on recover as there is no file header to verify
 			wantErr: "segment header BaseIndex 123 doesn't match metadata 1",
+		},
+		{
+			name: "bad segment header, part of initial commit",
+			// Only one commit, should be detected as incomplete/torn as header is
+			// part of commit and NOT error but just init as an empty segment since
+			// the first commit is incomplete.
+			numPreviousEntries: 0,
+			appendEntrySizes:   []int{10},
+			corrupt: func(twf *testWritableFile) error {
+				// twiddle the magic value
+				_, err := twf.WriteAt([]byte{123}, 0)
+				return err
+			},
+			wantLastIndex: 0, // Should recover as an empty segment
+		},
+		{
+			name: "bad segment header BaseIndex, valid commit",
+			// Only one commit, should be detected as incomplete/torn as header is
+			// part of commit and NOT error but just init as an empty segment since
+			// the first commit is incomplete.
+			numPreviousEntries: 0,
+			appendEntrySizes:   []int{10},
+			corrupt: func(twf *testWritableFile) error {
+				// twiddle the base index
+				_, err := twf.WriteAt([]byte{123}, 8)
+				return err
+			},
+			wantLastIndex: 0, // Should recover as an empty segment
 		},
 		{
 			name:               "sealed tail",
@@ -323,6 +351,15 @@ func TestRecovery(t *testing.T) {
 					v := fmt.Sprintf("%05d: Some other bytes of data too.", lastIdx)
 					err := w.Append([]types.LogEntry{{Index: lastIdx, Data: []byte(v)}})
 					require.NoError(t, err)
+				}
+
+				if tc.wantLastIndex == 0 {
+					// We expected an empty segment, possibly due to a corrupt header as
+					// part of the first commit. Verify that the header is now correct
+					// after we've appended more data.
+					r, err := f.Open(seg0)
+					require.NoError(t, err)
+					r.Close()
 				}
 			}
 

@@ -16,12 +16,13 @@ import (
 
 func TestFileHeaderCodec(t *testing.T) {
 	cases := []struct {
-		name         string
-		info         types.SegmentInfo
-		bufSize      int
-		corrupt      func([]byte) []byte
-		wantWriteErr string
-		wantReadErr  string
+		name            string
+		info            types.SegmentInfo
+		bufSize         int
+		corrupt         func([]byte) []byte
+		wantWriteErr    string
+		wantReadErr     string
+		wantValidateErr string
 	}{
 		{
 			name: "basic encoding/decoding",
@@ -77,7 +78,7 @@ func TestFileHeaderCodec(t *testing.T) {
 				buf[8] = 0xff
 				return buf
 			},
-			wantReadErr: "corrupt",
+			wantValidateErr: "corrupt",
 		},
 		{
 			name: "bad ID reading",
@@ -90,7 +91,7 @@ func TestFileHeaderCodec(t *testing.T) {
 				buf[16] = 0xff
 				return buf
 			},
-			wantReadErr: "corrupt",
+			wantValidateErr: "corrupt",
 		},
 		{
 			name: "bad Codec reading",
@@ -103,7 +104,7 @@ func TestFileHeaderCodec(t *testing.T) {
 				buf[24] = 0xff
 				return buf
 			},
-			wantReadErr: "corrupt",
+			wantValidateErr: "corrupt",
 		},
 	}
 
@@ -128,9 +129,17 @@ func TestFileHeaderCodec(t *testing.T) {
 				buf = tc.corrupt(buf)
 			}
 
-			err = validateFileHeader(buf, tc.info)
+			got, err := readFileHeader(buf)
 			if tc.wantReadErr != "" {
 				require.ErrorContains(t, err, tc.wantReadErr)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, got)
+
+			err = validateFileHeader(*got, tc.info)
+			if tc.wantValidateErr != "" {
+				require.ErrorContains(t, err, tc.wantValidateErr)
 				return
 			}
 			require.NoError(t, err)
@@ -150,7 +159,11 @@ func TestFileHeaderCodecFuzz(t *testing.T) {
 
 		t.Logf("% x", buf[:])
 
-		err = validateFileHeader(buf[:], info)
+		got, err := readFileHeader(buf[:])
+		require.NoError(t, err)
+		require.NotNil(t, got)
+
+		err = validateFileHeader(*got, info)
 		require.NoError(t, err)
 	}
 }

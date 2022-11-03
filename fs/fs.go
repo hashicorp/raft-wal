@@ -61,20 +61,26 @@ func (fs *FS) Create(dir string, name string, size uint64) (types.WritableFile, 
 			return nil, err
 		}
 	}
-	// Fsync that thing to make sure it's real and it's metadata if we
-	// preallocated will service a crash.
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return nil, err
+	// We don't fsync here for performance reasons. Technically we need to fsync
+	// the file itself to make sure it is really persisted to disk, and you always
+	// need to fsync its parent dir after a creation because fsync doesn't ensure
+	// the directory entry is persisted - a crash could make the file appear to be
+	// missing as there is no directory entry.
+	//
+	// BUT, it doesn't actually matter if this file is crash safe, right up to the
+	// point where we actually commit log data. Since we always fsync the file
+	// when we commit logs, we don't need to again here. That does however leave
+	// the parent dir fsync which must be done after the first fsync to a newly
+	// created file to ensure it survives a crash.
+	//
+	// To handle that, we return a wrapped io.File that will fsync the parent dir
+	// as well the first time Sync is called (and only the first time),
+	fi := &File{
+		new:  0,
+		dir:  dir,
+		File: *f,
 	}
-
-	// We also need to fsync the parent dir otherwise a crash might loose the new
-	// file or it's updated size.
-	if err := fs.syncDir(dir); err != nil {
-		f.Close()
-		return nil, err
-	}
-	return f, nil
+	return fi, nil
 }
 
 // Delete indicates the file is no longer required. Typically it should be
@@ -85,7 +91,7 @@ func (fs *FS) Delete(dir string, name string) error {
 	}
 	// Make sure parent directory metadata is fsynced too before we call this
 	// "done".
-	return fs.syncDir(dir)
+	return syncDir(dir)
 }
 
 // OpenReader opens an existing file in read-only mode. If the file doesn't
@@ -104,7 +110,7 @@ func (fs *FS) OpenWriter(dir string, name string) (types.WritableFile, error) {
 	return os.OpenFile(filepath.Join(dir, name), os.O_RDWR, os.FileMode(0644))
 }
 
-func (fs *FS) syncDir(dir string) error {
+func syncDir(dir string) error {
 	f, err := os.Open(dir)
 	if err != nil {
 		return err

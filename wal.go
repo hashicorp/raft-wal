@@ -380,9 +380,13 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 		return err
 	}
 	if sealed {
-		if err := w.rotateSegmentLocked(indexStart); err != nil {
-			return err
-		}
+		go func() {
+			w.writeMu.Lock()
+			defer w.writeMu.Unlock()
+			if err := w.rotateSegmentLocked(indexStart); err != nil {
+				// TODO work out how to handle async errors
+			}
+		}()
 	}
 	return nil
 }
@@ -544,6 +548,21 @@ func (w *WAL) createNextSegment(newState *state) error {
 	newState.segments = newState.segments.Set(newTail.BaseIndex, ss)
 	newState.nextSegmentID++
 
+	// Create the file in parallel since we will recover based on the committed
+	// state in meta db either re-creating or deleting unnecessary files as needed
+	// after a crash. This parallelizes the fsyncs to different files to minimize
+	// latency blocking next write.
+	type createReturn struct {
+		w   types.SegmentWriter
+		err error
+	}
+	ch := make(chan createReturn)
+	go func() {
+		// Now create the new segment for writing.
+		sw, err := w.sf.Create(newTail)
+		ch <- createReturn{sw, err}
+	}()
+
 	// Commit the new meta to disk before we create new files so that we never
 	// leave a file with ID >= the persisted nextSegmentID lying around.
 	if err := w.metaDB.CommitState(newState.Persistent()); err != nil {
@@ -551,11 +570,11 @@ func (w *WAL) createNextSegment(newState *state) error {
 	}
 
 	// Now create the new segment for writing.
-	sw, err := w.sf.Create(newTail)
-	if err != nil {
-		return err
+	cr := <-ch
+	if cr.err != nil {
+		return cr.err
 	}
-	newState.tail = sw
+	newState.tail = cr.w
 
 	// Also cache the reader/log getter which is also the writer. We don't bother
 	// reopening read only since we assume we have exclusive access anyway and

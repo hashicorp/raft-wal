@@ -29,16 +29,6 @@ type tailWriter interface {
 }
 
 func openReader(info types.SegmentInfo, rf types.ReadableFile, bufPool *sync.Pool) (*Reader, error) {
-	var hdr [fileHeaderLen]byte
-
-	if _, err := rf.ReadAt(hdr[:], 0); err != nil {
-		return nil, err
-	}
-
-	if err := validateFileHeader(hdr[:], info); err != nil {
-		return nil, err
-	}
-
 	r := &Reader{
 		info:    info,
 		rf:      rf,

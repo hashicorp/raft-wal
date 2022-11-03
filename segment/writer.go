@@ -64,18 +64,6 @@ type Writer struct {
 }
 
 func createFile(info types.SegmentInfo, wf types.WritableFile, bufPool *sync.Pool) (*Writer, error) {
-	// Write header and sync
-	var hdr [fileHeaderLen]byte
-	if err := writeFileHeader(hdr[:], info); err != nil {
-		return nil, err
-	}
-	if _, err := wf.WriteAt(hdr[:], 0); err != nil {
-		return nil, err
-	}
-	if err := wf.Sync(); err != nil {
-		return nil, err
-	}
-
 	r, err := openReader(info, wf, bufPool)
 	if err != nil {
 		return nil, err
@@ -86,7 +74,9 @@ func createFile(info types.SegmentInfo, wf types.WritableFile, bufPool *sync.Poo
 		r:    r,
 	}
 	r.tail = w
-	w.initEmpty()
+	if err := w.initEmpty(); err != nil {
+		return nil, err
+	}
 	return w, nil
 }
 
@@ -96,9 +86,12 @@ func recoverFile(info types.SegmentInfo, wf types.WritableFile, bufPool *sync.Po
 	if _, err := wf.ReadAt(hdr[:], 0); err != nil {
 		return nil, err
 	}
-	if err := validateFileHeader(hdr[:], info); err != nil {
-		return nil, err
-	}
+	// // TODO since we don't fsync after header write we need to allow for the
+	// // header to be partially written without failing (it just means the file has
+	// // zero committed data and can be discarded).
+	// if err := validateFileHeader(hdr[:], info); err != nil {
+	// 	return nil, err
+	// }
 	r, err := openReader(info, wf, bufPool)
 	if err != nil {
 		return nil, err
@@ -117,18 +110,58 @@ func recoverFile(info types.SegmentInfo, wf types.WritableFile, bufPool *sync.Po
 	return w, nil
 }
 
-func (w *Writer) initEmpty() {
-	// We just wrote the header to the file so the next write needs to go after
-	// that. Initialize the writeCursor.
-	w.writer.writeOffset = fileHeaderLen
+func (w *Writer) initEmpty() error {
+	// Write header into write buffer to be written out with the first commit.
+	w.writer.writeOffset = 0
+	w.ensureBufCap(fileHeaderLen)
+	w.writer.commitBuf = w.writer.commitBuf[:fileHeaderLen]
+
+	if err := writeFileHeader(w.writer.commitBuf, w.info); err != nil {
+		return err
+	}
+
+	w.writer.crc = crc32.Checksum(w.writer.commitBuf[:fileHeaderLen], castagnoliTable)
 
 	// Initialize the index
 	offsets := make([]uint32, 0, 32*1024)
 	w.offsets.Store(offsets)
+	return nil
 }
 
 func (w *Writer) recoverTail() error {
-	// Read through file from beginning until we hit zeros, EOF or corrupt frames.
+	// First read the file header. Note we wrote it as part of the first commit so
+	// it may be missing or partial written and that's OK as long as there are no
+	// other later commit frames!
+	var fh [fileHeaderLen]byte
+	_, err := w.wf.ReadAt(fh[:], 0)
+	// EOF is ok - the file might be empty if we crashed before committing
+	// anything and preallocation isn't supported.
+	if err != io.EOF && err != nil {
+		return err
+	}
+
+	readInfo, err := readFileHeader(fh[:])
+	if err == types.ErrCorrupt {
+		// Header is malformed or missing, don't error yet though we'll detect it
+		// later when we know if it's a problem or not.
+		err = nil
+	}
+	if err != nil {
+		return err
+	}
+	// If header wasn't detected as corrupt, it might still be just in a way
+	// that's valid since we've not verified it against the expected metadata yet.
+	// We'll wait to see if the header was part of the last commit before decide
+	// if we should validate it for corruption or not though. For now just make
+	// sure it's not nil so we don't have to handle nil checks everywhere.
+	if readInfo == nil {
+		// Zero info will fail validation against the actual metadata if it was
+		// corrupt when it shouldn't be later. Just prevents a nil panic.
+		readInfo = &types.SegmentInfo{}
+	}
+
+	// Read through file from after header until we hit zeros, EOF or corrupt
+	// frames.
 	offset := int64(fileHeaderLen)
 	var buf [frameHeaderLen]byte
 
@@ -189,8 +222,8 @@ READ:
 			finalCommit = &commitInfo{
 				fh:         fh,
 				offset:     offset,
-				crcStart:   fileHeaderLen, // First commit starts right after header
-				offsetsLen: len(offsets),  // Track how many entries were found up to this commit point.
+				crcStart:   0,            // First commit includes the file header
+				offsetsLen: len(offsets), // Track how many entries were found up to this commit point.
 			}
 			if prevCommit != nil {
 				finalCommit.crcStart = prevCommit.offset + frameHeaderLen
@@ -203,9 +236,9 @@ READ:
 
 	if finalCommit == nil {
 		// There were no commit frames found at all. This segment file is
-		// effectively empty. Init it that way ready for appending.
-		w.initEmpty()
-		return nil
+		// effectively empty. Init it that way ready for appending. This overwrites
+		// the file header so it doesn't matter if it was valid or not.
+		return w.initEmpty()
 	}
 
 	// Assume that the final commit is good for now and set the writer state
@@ -234,7 +267,9 @@ READ:
 		// after the last commit.
 		offsets = offsets[:finalCommit.offsetsLen]
 		w.offsets.Store(offsets)
-		return nil
+
+		// Since at least one commit was found, the header better be valid!
+		return validateFileHeader(*readInfo, w.info)
 	}
 
 	// Last frame was a commit frame! Let's check that all the data written in
@@ -255,20 +290,24 @@ READ:
 		// All is good. We already setup the state we need for writer other than
 		// offsets.
 		w.offsets.Store(offsets)
-		return nil
+
+		// Since at least one commit was found, the header better be valid!
+		return validateFileHeader(*readInfo, w.info)
 	}
 
 	// Last commit was incomplete rewind back to the previous one or start of file
 	if prevCommit == nil {
-		// Start of file
-		w.initEmpty()
-		return nil
+		// Init wil re-write the file header so it doesn't matter if it was corrupt
+		// or not!
+		return w.initEmpty()
 	}
 
 	w.writer.writeOffset = uint32(prevCommit.offset + frameHeaderLen)
 	offsets = offsets[:prevCommit.offsetsLen]
 	w.offsets.Store(offsets)
-	return nil
+
+	// Since at least one commit was found, the header better be valid!
+	return validateFileHeader(*readInfo, w.info)
 }
 
 // Close implements io.Closer

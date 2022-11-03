@@ -84,7 +84,7 @@ func writeFileHeader(buf []byte, info types.SegmentInfo) error {
 	return nil
 }
 
-// readFileHeader reads a file header into	 buf for the given file metadata.
+// readFileHeader reads a file header from buf.
 func readFileHeader(buf []byte) (*types.SegmentInfo, error) {
 	if len(buf) < fileHeaderLen {
 		return nil, io.ErrShortBuffer
@@ -104,12 +104,7 @@ func readFileHeader(buf []byte) (*types.SegmentInfo, error) {
 	return &i, nil
 }
 
-func validateFileHeader(buf []byte, expect types.SegmentInfo) error {
-	got, err := readFileHeader(buf)
-	if err != nil {
-		return err
-	}
-
+func validateFileHeader(got, expect types.SegmentInfo) error {
 	if expect.ID != got.ID {
 		return fmt.Errorf("%w: segment header ID %x doesn't match metadata %x",
 			types.ErrCorrupt, got.ID, expect.ID)

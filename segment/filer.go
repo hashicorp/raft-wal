@@ -83,6 +83,24 @@ func (f *Filer) Open(info types.SegmentInfo) (types.SegmentReader, error) {
 		return nil, err
 	}
 
+	// Validate header here since openReader is re-used by writer where it's valid
+	// for the file header not to be committed yet after a crash so we can't check
+	// it there.
+	var hdr [fileHeaderLen]byte
+
+	if _, err := rf.ReadAt(hdr[:], 0); err != nil {
+		return nil, err
+	}
+
+	gotInfo, err := readFileHeader(hdr[:])
+	if err != nil {
+		return nil, err
+	}
+
+	if err := validateFileHeader(*gotInfo, info); err != nil {
+		return nil, err
+	}
+
 	return openReader(info, rf, &f.bufPool)
 }
 
