@@ -210,6 +210,8 @@ func stubStorage(ts *testStorage) walOpt {
 // while testing WAL logic. It implements both segmentFiler and MetaStore
 // interfaces.
 type testStorage struct {
+	mu sync.Mutex
+
 	segments map[uint64]*testSegment
 
 	deleted []*testSegment
@@ -242,6 +244,9 @@ func (ts *testStorage) Close() error {
 func (ts *testStorage) debugDump() string {
 	var sb strings.Builder
 
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
 	// We want to dump them in order so copy to an array first and sort!
 	sorted := make([]*testSegment, 0, len(ts.segments))
 	for _, s := range ts.segments {
@@ -267,6 +272,10 @@ func (ts *testStorage) debugDump() string {
 
 func (ts *testStorage) assertValidMetaState(t *testing.T) {
 	t.Helper()
+
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
 	// must be an unsealed final segment or empty
 	n := len(ts.metaState.Segments)
 	for i, seg := range ts.metaState.Segments {
@@ -290,6 +299,8 @@ func (ts *testStorage) recordCall(name string) {
 
 // Load implements MetaStore
 func (ts *testStorage) Load(dir string) (types.PersistentState, error) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
 	ts.recordCall("Load")
 	ts.lastDir = dir
 	return ts.metaState, ts.loadErr
@@ -297,6 +308,8 @@ func (ts *testStorage) Load(dir string) (types.PersistentState, error) {
 
 // CommitState implements MetaStore
 func (ts *testStorage) CommitState(ps types.PersistentState) error {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
 	ts.recordCall("CommitState")
 	ts.metaState = ps
 
@@ -321,6 +334,8 @@ func (ts *testStorage) CommitState(ps types.PersistentState) error {
 
 // GetStable implements MetaStore
 func (ts *testStorage) GetStable(key []byte) ([]byte, error) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
 	ts.recordCall("GetStable")
 	if ts.getStableErr != nil {
 		return nil, ts.getStableErr
@@ -330,6 +345,8 @@ func (ts *testStorage) GetStable(key []byte) ([]byte, error) {
 
 // SetStable implements MetaStore
 func (ts *testStorage) SetStable(key []byte, value []byte) error {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
 	ts.recordCall("SetStable")
 	if ts.stable == nil {
 		ts.stable = make(map[string][]byte)
@@ -340,6 +357,8 @@ func (ts *testStorage) SetStable(key []byte, value []byte) error {
 
 // Create implements segmentFiler
 func (ts *testStorage) Create(info types.SegmentInfo) (types.SegmentWriter, error) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
 	ts.recordCall("Create")
 	_, ok := ts.segments[info.ID]
 	if ok {
@@ -358,6 +377,8 @@ func (ts *testStorage) Create(info types.SegmentInfo) (types.SegmentWriter, erro
 
 // RecoverTail implements segmentFiler
 func (ts *testStorage) RecoverTail(info types.SegmentInfo) (types.SegmentWriter, error) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
 	ts.recordCall("RecoverTail")
 	// Safety checks
 	sw, ok := ts.segments[info.ID]
@@ -373,6 +394,8 @@ func (ts *testStorage) RecoverTail(info types.SegmentInfo) (types.SegmentWriter,
 
 // Open implements segmentFiler
 func (ts *testStorage) Open(info types.SegmentInfo) (types.SegmentReader, error) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
 	ts.recordCall("Open")
 	sw, ok := ts.segments[info.ID]
 	if !ok {
@@ -387,6 +410,8 @@ func (ts *testStorage) Open(info types.SegmentInfo) (types.SegmentReader, error)
 
 // List implements segmentFiler
 func (ts *testStorage) List() (map[uint64]uint64, error) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
 	ts.recordCall("List")
 	if ts.listErr != nil {
 		return nil, ts.listErr
@@ -402,6 +427,8 @@ func (ts *testStorage) List() (map[uint64]uint64, error) {
 
 // Delete implements segmentFiler
 func (ts *testStorage) Delete(baseIndex uint64, ID uint64) error {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
 	ts.recordCall("Delete")
 	if ts.deleteErr != nil {
 		return ts.deleteErr
@@ -416,6 +443,8 @@ func (ts *testStorage) Delete(baseIndex uint64, ID uint64) error {
 
 func (ts *testStorage) assertDeletedAndClosed(t *testing.T, baseIndexes ...uint64) {
 	t.Helper()
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
 	deletedIndexes := make([]uint64, 0, len(baseIndexes))
 	for _, s := range ts.deleted {
 		info := s.info()
@@ -428,6 +457,8 @@ func (ts *testStorage) assertDeletedAndClosed(t *testing.T, baseIndexes ...uint6
 
 func (ts *testStorage) assertAllClosed(t *testing.T, wantClosed bool) {
 	t.Helper()
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
 	for _, s := range ts.segments {
 		closed := s.closed()
 		if wantClosed {
@@ -486,6 +517,13 @@ func (s *testSegment) GetLog(idx uint64) (*types.PooledBuffer, error) {
 }
 
 func (s *testSegment) Append(entries []types.LogEntry) error {
+	sealed, _, err := s.Sealed()
+	if err != nil {
+		return err
+	}
+	if sealed {
+		return ErrSealed
+	}
 	return s.mutate(func(newState *testSegmentState) error {
 		if newState.closed {
 			return errors.New("closed")

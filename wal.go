@@ -58,6 +58,24 @@ type WAL struct {
 	// be held before s is loaded until all modifications to s or appends to the
 	// tail are complete.
 	writeMu sync.Mutex
+
+	// These chans are used to hand off serial execution for segment rotation to a
+	// background goroutine so that StoreLogs can return and allow the caller to
+	// get on with other work while we mess with files. The next call to StoreLogs
+	// needs to wait until the background work is done though since the current
+	// log is sealed.
+	//
+	// At the end of StoreLogs, if the segment was sealed, still holding writeMu
+	// we make awaitRotate so it's non-nil, then send the indexStart on
+	// triggerRotate which is 1-buffered. We then drop the lock and return to
+	// caller. The rotation goroutine reads from triggerRotate in a loop, takes
+	// the write lock performs rotation and then closes awaitRotate and sets it to
+	// nil before releasing the lock. The next StoreLogs call takes the lock,
+	// checks if awaitRotate. If it is nil there is no rotation going on so
+	// StoreLogs can proceed. If it is non-nil, it releases the lock and then
+	// waits on the close before acquiring the lock and continuing.
+	triggerRotate chan uint64
+	awaitRotate   chan struct{}
 }
 
 type walOpt func(*WAL)
@@ -69,8 +87,9 @@ type walOpt func(*WAL)
 // otherwise the returned *WAL is in a state ready for use.
 func Open(dir string, opts ...walOpt) (*WAL, error) {
 	w := &WAL{
-		dir:     dir,
-		metrics: make([]uint64, numMetrics),
+		dir:           dir,
+		metrics:       make([]uint64, numMetrics),
+		triggerRotate: make(chan uint64, 1),
 	}
 	// Apply options
 	for _, opt := range opts {
@@ -195,6 +214,9 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 	// Delete any unused segment files left over after a crash.
 	w.deleteSegments(toDelete)
 
+	// Start the rotation routine
+	go w.runRotate()
+
 	return w, nil
 }
 
@@ -314,6 +336,15 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 	w.writeMu.Lock()
 	defer w.writeMu.Unlock()
 
+	awaitCh := w.awaitRotate
+	if awaitCh != nil {
+		// We managed to race for writeMu with the background rotate operation which
+		// needs to complete first. Wait for it to complete.
+		w.writeMu.Unlock()
+		<-awaitCh
+		w.writeMu.Lock()
+	}
+
 	s, release := w.acquireState()
 	defer release()
 
@@ -380,13 +411,8 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 		return err
 	}
 	if sealed {
-		go func() {
-			w.writeMu.Lock()
-			defer w.writeMu.Unlock()
-			if err := w.rotateSegmentLocked(indexStart); err != nil {
-				// TODO work out how to handle async errors
-			}
-		}()
+		// Async rotation to allow caller to do more work while we mess with files.
+		w.triggerRotateLocked(indexStart)
 	}
 	return nil
 }
@@ -494,6 +520,44 @@ func (w *WAL) GetUint64(key []byte) (uint64, error) {
 		return 0, fmt.Errorf("GetUint64 called on a non-uint64 key")
 	}
 	return binary.LittleEndian.Uint64(raw), nil
+}
+
+func (w *WAL) triggerRotateLocked(indexStart uint64) {
+	if atomic.LoadUint32(&w.closed) == 1 {
+		return
+	}
+	w.awaitRotate = make(chan struct{})
+	w.triggerRotate <- indexStart
+}
+
+func (w *WAL) runRotate() {
+	for {
+		indexStart := <-w.triggerRotate
+
+		// Either triggerRotate was closed by Close, or Close raced with a real
+		// trigger, either way shut down without changing anything else. In the
+		// second case the segment file is sealed but meta data isn't updated yet
+		// but we have to handle that case during recovery anyway so it's simpler
+		// not to try and complete the rotation here on an already-closed WAL.
+		closed := atomic.LoadUint32(&w.closed)
+		if closed == 1 {
+			return
+		}
+
+		w.writeMu.Lock()
+		err := w.rotateSegmentLocked(indexStart)
+		if err != nil {
+			// The only possible errors indicate bugs and could probably validly be
+			// panics, but be conservative and just attempt to log them instead!
+			w.log.Error("%s", err)
+		}
+		done := w.awaitRotate
+		w.awaitRotate = nil
+		w.writeMu.Unlock()
+		// Now we are done, close the channel to unblock the waiting writer if there
+		// is one
+		close(done)
+	}
 }
 
 func (w *WAL) rotateSegmentLocked(indexStart uint64) error {
@@ -755,6 +819,12 @@ func (w *WAL) Close() error {
 		// Wait for writes
 		w.writeMu.Lock()
 		defer w.writeMu.Unlock()
+
+		// It doesn't matter if there is a rotation scheduled because runRotate will
+		// exist when it sees we are closed anyway.
+		w.awaitRotate = nil
+		// Awake and terminate the runRotate
+		close(w.triggerRotate)
 
 		// Replace state with nil state
 		s := w.loadState()
