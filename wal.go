@@ -627,7 +627,6 @@ func (w *WAL) createNextSegment(newState *state) (func() error, error) {
 		SegmentInfo: newTail,
 	}
 	newState.segments = newState.segments.Set(newTail.BaseIndex, ss)
-	newState.nextSegmentID++
 
 	// We're ready to commit now! Return a postCommit that will actually create
 	// the segment file once meta is persisted. We don't do it in parallel because

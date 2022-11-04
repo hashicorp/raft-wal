@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/HdrHistogram/hdrhistogram-go"
@@ -64,6 +65,8 @@ func (f *appendRequesterFactory) GetRequester(number uint64) bench.Requester {
 
 // appendRequester implements bench.Requester for appending entries to the WAL.
 type appendRequester struct {
+	closed uint32
+
 	opts opts
 
 	batch        []*raft.Log
@@ -153,6 +156,9 @@ func (r *appendRequester) runTruncate(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
+			if atomic.LoadUint32(&r.closed) == 1 {
+				return
+			}
 			first, err := r.store.FirstIndex()
 			if err != nil {
 				panic(err)
@@ -214,9 +220,12 @@ func (r *appendRequester) dumpStats() {
 
 // Teardown is called upon benchmark completion.
 func (r *appendRequester) Teardown() error {
-	r.dumpStats()
-	if c, ok := r.store.(io.Closer); ok {
-		return c.Close()
+	old := atomic.SwapUint32(&r.closed, 1)
+	if old == 0 {
+		r.dumpStats()
+		if c, ok := r.store.(io.Closer); ok {
+			return c.Close()
+		}
 	}
 	return nil
 }
