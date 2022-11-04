@@ -11,19 +11,29 @@ import (
 	"strings"
 	"time"
 
+	"github.com/HdrHistogram/hdrhistogram-go"
 	"github.com/benmathews/bench"
 	"github.com/hashicorp/raft-wal/metadb"
 )
 
 type opts struct {
-	version   string
-	dir       string
+	// LogStore params
+	version string
+	dir     string
+	segSize int
+
+	// Common params
+	preLoadN int
+
+	// Append params
 	rate      int
 	duration  time.Duration
 	logSize   int
 	batchSize int
-	segSize   int
-	preLoadN  int
+
+	// Truncate params
+	truncateTrailingLogs int
+	truncatePeriod       time.Duration
 }
 
 func main() {
@@ -36,6 +46,8 @@ func main() {
 	flag.IntVar(&o.logSize, "s", 128, "size of each log entry appended")
 	flag.IntVar(&o.batchSize, "n", 1, "number of logs per append batch")
 	flag.IntVar(&o.segSize, "seg", 64, "segment size in MB")
+	flag.IntVar(&o.truncateTrailingLogs, "trail", 10000, "number of trailing logs to leave on truncate")
+	flag.DurationVar(&o.truncatePeriod, "tp", 0, "how often to head truncate back to 'trail' logs during append")
 	flag.IntVar(&o.preLoadN, "preload", 0, "number of logs to append and then truncate before we start")
 	flag.Parse()
 
@@ -62,22 +74,34 @@ func main() {
 			}
 		}
 	}
-	r := &appendRequesterFactory{
-		Dir:       o.dir,
-		Version:   o.version,
-		LogSize:   o.logSize,
-		BatchSize: o.batchSize,
-		SegSize:   o.segSize,
-		Preload:   o.preLoadN,
-	}
+	r := &appendRequesterFactory{opts: o}
 	benchmark := bench.NewBenchmark(r, uint64(o.rate), 1, o.duration, 1)
 	summary, err := benchmark.Run()
 	if err != nil {
 		panic(err)
 	}
 
+	printHistogram("Good Append Latencies (ms)", summary.SuccessHistogram, 1_000_000)
+
 	fmt.Println(summary)
-	outFile := fmt.Sprintf("bench-result-%s-s%d-n%d-r%d-seg%dm-pre%d-%s.txt",
-		o.duration, o.logSize, o.batchSize, o.rate, o.segSize, o.preLoadN, o.version)
-	summary.GenerateLatencyDistribution(nil, outFile)
+	summary.GenerateLatencyDistribution(nil, outFileName(o, "bench-result"))
+}
+
+func outFileName(o opts, prefix string) string {
+	return fmt.Sprintf("%s-%s-s%d-n%d-r%d-seg%dm-pre%d-trail%d-tp%s-%s.txt", prefix,
+		o.duration, o.logSize, o.batchSize, o.rate, o.segSize, o.preLoadN,
+		o.truncateTrailingLogs, o.truncatePeriod, o.version)
+}
+
+func printHistogram(name string, h *hdrhistogram.Histogram, scale int64) {
+	fmt.Printf("\n==> %s\n", name)
+	fmt.Printf("  count    mean     p50     p99   p99.9     max\n")
+	fmt.Printf(" %6d  %6.0f  %6d  %6d  %6d  %6d\n",
+		h.TotalCount(),
+		h.Mean()/float64(scale),
+		h.ValueAtPercentile(50)/scale,
+		h.ValueAtPercentile(99)/scale,
+		h.ValueAtPercentile(99.9)/scale,
+		h.Max()/scale,
+	)
 }

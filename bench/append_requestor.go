@@ -4,13 +4,16 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"io"
 	"path/filepath"
 	"time"
 
+	"github.com/HdrHistogram/hdrhistogram-go"
 	"github.com/benmathews/bench"
+	histwriter "github.com/benmathews/hdrhistogram-writer"
 	"github.com/hashicorp/raft"
 	raftboltdb "github.com/hashicorp/raft-boltdb"
 	wal "github.com/hashicorp/raft-wal"
@@ -29,12 +32,7 @@ func init() {
 
 // appendRequesterFactory implements bench.RequesterFactory
 type appendRequesterFactory struct {
-	Dir       string
-	Version   string
-	LogSize   int
-	BatchSize int
-	SegSize   int
-	Preload   int
+	opts opts
 }
 
 // GetRequester returns a new Requester, called for each Benchmark
@@ -45,37 +43,36 @@ func (f *appendRequesterFactory) GetRequester(number uint64) bench.Requester {
 	}
 
 	var fn func() (raft.LogStore, error)
-	switch f.Version {
+	switch f.opts.version {
 	case "wal":
 		fn = func() (raft.LogStore, error) {
-			return wal.Open(f.Dir, wal.WithSegmentSize(f.SegSize*1024*1024))
+			return wal.Open(f.opts.dir, wal.WithSegmentSize(f.opts.segSize*1024*1024))
 		}
 	case "bolt":
 		fn = func() (raft.LogStore, error) {
-			return raftboltdb.NewBoltStore(filepath.Join(f.Dir, "raft.db"))
+			return raftboltdb.NewBoltStore(filepath.Join(f.opts.dir, "raft.db"))
 		}
 	default:
-		panic("unknown LogStore version: " + f.Version)
+		panic("unknown LogStore version: " + f.opts.version)
 	}
 
 	return &appendRequester{
-		dir:       f.Dir,
-		logSize:   f.LogSize,
-		batchSize: f.BatchSize,
-		preload:   f.Preload,
-		newStore:  fn,
+		opts:     f.opts,
+		newStore: fn,
 	}
 }
 
 // appendRequester implements bench.Requester for appending entries to the WAL.
 type appendRequester struct {
-	dir                string
-	logSize, batchSize int
-	preload            int
-	batch              []*raft.Log
-	index              uint64
-	newStore           func() (raft.LogStore, error)
-	store              raft.LogStore
+	opts opts
+
+	batch        []*raft.Log
+	index        uint64
+	newStore     func() (raft.LogStore, error)
+	store        raft.LogStore
+	truncateStop func()
+
+	truncateTiming *hdrhistogram.Histogram
 }
 
 // Setup prepares the Requester for benchmarking.
@@ -88,22 +85,22 @@ func (r *appendRequester) Setup() error {
 
 	// Prebuild the batch of logs. There is no compression so we don't care that
 	// they are all the same data.
-	r.batch = make([]*raft.Log, r.batchSize)
+	r.batch = make([]*raft.Log, r.opts.batchSize)
 	for i := range r.batch {
 		r.batch[i] = &raft.Log{
 			// We'll vary the indexes each time but save on setting this up the same
 			// way every time to!
-			Data:       randomData[:r.logSize],
+			Data:       randomData[:r.opts.logSize],
 			AppendedAt: time.Now(),
 		}
 	}
 	r.index = 1
 
-	if r.preload > 0 {
+	if r.opts.preLoadN > 0 {
 		// Write lots of big records and then delete them again. We'll use batches
 		// of 1000 1024 byte records for now to speed things up a bit.
 		preBatch := make([]*raft.Log, 0, 1000)
-		for r.index <= uint64(r.preload) {
+		for r.index <= uint64(r.opts.preLoadN) {
 			preBatch = append(preBatch, &raft.Log{Index: r.index, Data: randomData[:1024]})
 			r.index++
 			if len(preBatch) == 1000 {
@@ -116,26 +113,73 @@ func (r *appendRequester) Setup() error {
 			}
 		}
 		if len(preBatch) > 0 {
-			fmt.Printf("Preloading up to index %d\n", r.index)
+			fmt.Printf("Preloading up to index %d\r", r.index)
 			err := r.store.StoreLogs(preBatch)
 			if err != nil {
 				return err
 			}
 		}
-		// Now truncate all, but one of those back out. We leave one to be more
-		// realistic since raft always leaves some recent logs. Note r.index is
-		// already at the next index after the one we just wrote so the inclusive
-		// delete range is not one but two before that to leave the one before
-		// intact.
-		fmt.Printf("Truncating 1 - %d\n", r.index-2)
-		err := r.store.DeleteRange(1, r.index-2)
-		if err != nil {
-			return err
+		if r.opts.truncatePeriod == 0 {
+			// Now truncate all, but one of those back out. We leave one to be more
+			// realistic since raft always leaves some recent logs. Note r.index is
+			// already at the next index after the one we just wrote so the inclusive
+			// delete range is not one but two before that to leave the one before
+			// intact.
+			fmt.Printf("\nTruncating 1 - %d\n", r.index-2)
+			err := r.store.DeleteRange(1, r.index-2)
+			if err != nil {
+				return err
+			}
+		} else {
+			fmt.Printf("\nDone preloading, will leave truncate for background process\n")
 		}
 		r.dumpStats()
 	}
+	if r.opts.truncatePeriod > 0 {
+		r.truncateTiming = hdrhistogram.New(1, 10_000_000, 3)
+		fmt.Printf("Starting Truncator every %s\n", r.opts.truncatePeriod)
+		ctx, cancel := context.WithCancel(context.Background())
+		r.truncateStop = cancel
+		go r.runTruncate(ctx)
+	} else {
+		fmt.Println("Truncation disabled")
+	}
 
 	return nil
+}
+
+func (r *appendRequester) runTruncate(ctx context.Context) {
+	ticker := time.NewTicker(r.opts.truncatePeriod)
+	for {
+		select {
+		case <-ticker.C:
+			first, err := r.store.FirstIndex()
+			if err != nil {
+				panic(err)
+			}
+			last, err := r.store.LastIndex()
+			if err != nil {
+				panic(err)
+			}
+
+			deleteMax := uint64(0)
+			if last > uint64(r.opts.truncateTrailingLogs) {
+				deleteMax = last - uint64(r.opts.truncateTrailingLogs)
+			}
+			if deleteMax >= first {
+				st := time.Now()
+				err := r.store.DeleteRange(first, deleteMax)
+				elapsed := time.Since(st)
+				r.truncateTiming.RecordValue(elapsed.Microseconds())
+				if err != nil {
+					panic(err)
+				}
+			}
+
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // Request performs a synchronous request to the system under test.
@@ -154,10 +198,17 @@ type metricer interface {
 
 func (r *appendRequester) dumpStats() {
 	if m, ok := r.store.(metricer); ok {
-		fmt.Println("== METRICS ==========")
+		fmt.Println("\n== METRICS ==========")
 		for k, v := range m.Metrics() {
 			fmt.Printf("% 25s: % 15d\n", k, v)
 		}
+	}
+	if r.truncateTiming != nil {
+		scaleFactor := 0.001 // Scale us to ms.
+		if err := histwriter.WriteDistributionFile(r.truncateTiming, nil, scaleFactor, outFileName(r.opts, "bench-result-truncate")); err != nil {
+			fmt.Printf("ERROR writing truncate histogram: %s\n", err)
+		}
+		printHistogram("Truncate Latency (ms)", r.truncateTiming, 1000)
 	}
 }
 

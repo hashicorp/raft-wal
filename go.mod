@@ -3,8 +3,10 @@ module github.com/hashicorp/raft-wal
 go 1.18
 
 require (
+	github.com/HdrHistogram/hdrhistogram-go v1.1.0
 	github.com/benbjohnson/immutable v0.4.0
 	github.com/benmathews/bench v0.0.0-20210120214102-f7c75b9ef6e7
+	github.com/benmathews/hdrhistogram-writer v0.0.0-20210120211942-3cb1c7c33f95
 	github.com/coreos/etcd v3.3.27+incompatible
 	github.com/google/gofuzz v1.2.0
 	github.com/hashicorp/go-hclog v0.14.1
@@ -15,9 +17,7 @@ require (
 )
 
 require (
-	github.com/HdrHistogram/hdrhistogram-go v1.1.0 // indirect
 	github.com/armon/go-metrics v0.3.8 // indirect
-	github.com/benmathews/hdrhistogram-writer v0.0.0-20210120211942-3cb1c7c33f95 // indirect
 	github.com/boltdb/bolt v1.3.1 // indirect
 	github.com/codahale/hdrhistogram v0.9.0 // indirect
 	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf // indirect
