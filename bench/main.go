@@ -18,9 +18,10 @@ import (
 
 type opts struct {
 	// LogStore params
-	version string
-	dir     string
-	segSize int
+	version        string
+	dir            string
+	segSize        int
+	noFreelistSync bool
 
 	// Common params
 	preLoadN int
@@ -49,6 +50,7 @@ func main() {
 	flag.IntVar(&o.truncateTrailingLogs, "trail", 10000, "number of trailing logs to leave on truncate")
 	flag.DurationVar(&o.truncatePeriod, "tp", 0, "how often to head truncate back to 'trail' logs during append")
 	flag.IntVar(&o.preLoadN, "preload", 0, "number of logs to append and then truncate before we start")
+	flag.BoolVar(&o.noFreelistSync, "no-fl-sync", false, "used to disable freelist sync in boltdb for v=bolt")
 	flag.Parse()
 
 	if o.dir == "" {
@@ -75,7 +77,7 @@ func main() {
 		}
 	}
 	r := &appendRequesterFactory{opts: o}
-	benchmark := bench.NewBenchmark(r, uint64(o.rate), 1, o.duration, 1)
+	benchmark := bench.NewBenchmark(r, uint64(o.rate), 1, o.duration, 0)
 	summary, err := benchmark.Run()
 	if err != nil {
 		panic(err)
@@ -88,9 +90,13 @@ func main() {
 }
 
 func outFileName(o opts, prefix string) string {
+	version := o.version
+	if o.version == "bolt" && o.noFreelistSync {
+		version += "-nfls"
+	}
 	return fmt.Sprintf("%s-%s-s%d-n%d-r%d-seg%dm-pre%d-trail%d-tp%s-%s.txt", prefix,
 		o.duration, o.logSize, o.batchSize, o.rate, o.segSize, o.preLoadN,
-		o.truncateTrailingLogs, o.truncatePeriod, o.version)
+		o.truncateTrailingLogs, o.truncatePeriod, version)
 }
 
 func printHistogram(name string, h *hdrhistogram.Histogram, scale int64) {

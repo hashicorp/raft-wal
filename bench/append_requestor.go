@@ -16,8 +16,9 @@ import (
 	"github.com/benmathews/bench"
 	histwriter "github.com/benmathews/hdrhistogram-writer"
 	"github.com/hashicorp/raft"
-	raftboltdb "github.com/hashicorp/raft-boltdb"
+	raftboltdb "github.com/hashicorp/raft-boltdb/v2"
 	wal "github.com/hashicorp/raft-wal"
+	"go.etcd.io/bbolt"
 )
 
 var (
@@ -51,7 +52,13 @@ func (f *appendRequesterFactory) GetRequester(number uint64) bench.Requester {
 		}
 	case "bolt":
 		fn = func() (raft.LogStore, error) {
-			return raftboltdb.NewBoltStore(filepath.Join(f.opts.dir, "raft.db"))
+			boltOpts := raftboltdb.Options{
+				Path: filepath.Join(f.opts.dir, "raft.db"),
+				BoltOptions: &bbolt.Options{
+					NoFreelistSync: f.opts.noFreelistSync,
+				},
+			}
+			return raftboltdb.New(boltOpts)
 		}
 	default:
 		panic("unknown LogStore version: " + f.opts.version)

@@ -7,18 +7,19 @@ require (
 	github.com/benbjohnson/immutable v0.4.0
 	github.com/benmathews/bench v0.0.0-20210120214102-f7c75b9ef6e7
 	github.com/benmathews/hdrhistogram-writer v0.0.0-20210120211942-3cb1c7c33f95
+	github.com/boltdb/bolt v1.3.1
 	github.com/coreos/etcd v3.3.27+incompatible
 	github.com/google/gofuzz v1.2.0
 	github.com/hashicorp/go-hclog v0.14.1
 	github.com/hashicorp/raft v1.3.10
 	github.com/hashicorp/raft-boltdb v0.0.0-20220329195025-15018e9b97e0
+	github.com/hashicorp/raft-boltdb/v2 v2.2.2
 	github.com/stretchr/testify v1.8.0
 	go.etcd.io/bbolt v1.3.6
 )
 
 require (
 	github.com/armon/go-metrics v0.3.8 // indirect
-	github.com/boltdb/bolt v1.3.1 // indirect
 	github.com/codahale/hdrhistogram v0.9.0 // indirect
 	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf // indirect
 	github.com/coreos/pkg v0.0.0-20220810130054-c7d1c02cb6cf // indirect
