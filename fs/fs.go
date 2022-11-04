@@ -14,9 +14,13 @@ import (
 	"github.com/hashicorp/raft-wal/types"
 )
 
-// FS implements the wal.VFS interface using GO's built in OS
-// Filesystem (and a few helpers).
-type FS struct{}
+// FS implements the wal.VFS interface using GO's built in OS Filesystem (and a
+// few helpers).
+//
+// TODO if we changed the interface to be Dir centric we could cache the open
+// dir handle and save some time opening it on each Create in order to fsync.
+type FS struct {
+}
 
 func New() *FS {
 	return &FS{}

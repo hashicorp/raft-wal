@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coreos/etcd/pkg/fileutil"
 	"github.com/hashicorp/raft"
 	raftboltdb "github.com/hashicorp/raft-boltdb"
 	wal "github.com/hashicorp/raft-wal"
@@ -36,6 +37,9 @@ func BenchmarkAppend(b *testing.B) {
 			b.Run(fmt.Sprintf("entrySize=%s/batchSize=%d/v=WAL", sizeNames[i], bSize), func(b *testing.B) {
 				ls, done := openWAL(b)
 				defer done()
+				// close _first_ (defers run in reverse order) before done() which will
+				// delete since rotate could still be happening
+				defer ls.Close()
 				runAppendBench(b, ls, s, bSize)
 			})
 			b.Run(fmt.Sprintf("entrySize=%s/batchSize=%d/v=Bolt", sizeNames[i], bSize), func(b *testing.B) {
@@ -106,6 +110,9 @@ func BenchmarkGetLogs(b *testing.B) {
 	for i, s := range sizes {
 		wLs, done := openWAL(b)
 		defer done()
+		// close _first_ (defers run in reverse order) before done() which will
+		// delete since rotate could still be happening
+		defer wLs.Close()
 		populateLogs(b, wLs, s, 128) // fixed 128 byte logs
 
 		bLs := openBolt(b)
@@ -148,5 +155,68 @@ func runGetLogBench(b *testing.B, ls raft.LogStore, n int) {
 		err := ls.GetLog(uint64((i+1)%n), &log)
 		b.StopTimer()
 		require.NoError(b, err)
+	}
+}
+
+// These OS benchmarks showed that at least on my Mac Creating and preallocating
+// a file is not reliably quicker than renaming a file we already created and
+// preallocated so the extra work of doing that in the background ahead of time
+// and just renaming it during rotation seems unnecessary. We are not fsyncing
+// either the file or parent dir in either case which dominates cost of either
+// operation. Three random consecutive runs on my machine:
+//
+// BenchmarkOSCreateAndPreallocate-16           100            370304 ns/op             221 B/op          3 allocs/op
+// BenchmarkOSRename-16                         100            876001 ns/op             570 B/op          5 allocs/op
+//
+// BenchmarkOSCreateAndPreallocate-16           100            353654 ns/op             221 B/op          3 allocs/op
+// BenchmarkOSRename-16                         100            168558 ns/op             570 B/op          5 allocs/op
+//
+// BenchmarkOSCreateAndPreallocate-16           100            367360 ns/op             224 B/op          3 allocs/op
+// BenchmarkOSRename-16                         100           1353014 ns/op             571 B/op          5 allocs/op
+
+func BenchmarkOSCreateAndPreallocate(b *testing.B) {
+	tmpDir, err := os.MkdirTemp("", "raft-wal-bench-*")
+	require.NoError(b, err)
+	defer os.RemoveAll(tmpDir)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fname := filepath.Join(tmpDir, fmt.Sprintf("test-%d.txt", i))
+		b.StartTimer()
+		f, err := os.OpenFile(fname, os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644))
+		if err != nil {
+			panic(err) // require is kinda slow in benchmarks
+		}
+		err = fileutil.Preallocate(f, int64(64*1024*1024), true)
+		if err != nil {
+			panic(err)
+		}
+		b.StopTimer()
+		f.Close()
+	}
+}
+
+func BenchmarkOSRename(b *testing.B) {
+	tmpDir, err := os.MkdirTemp("", "raft-wal-bench-*")
+	require.NoError(b, err)
+	defer os.RemoveAll(tmpDir)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tmpName := filepath.Join(tmpDir, fmt.Sprintf("%d.tmp", i%2))
+		// Create the tmp file outside timer loop to simulate it happening in the
+		// background
+		f, err := os.OpenFile(tmpName, os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644))
+		require.NoError(b, err)
+		f.Close()
+
+		fname := filepath.Join(tmpDir, fmt.Sprintf("test-%d.txt", i))
+		b.StartTimer()
+		// Note we are not fsyncing parent dir in either case
+		err = os.Rename(tmpName, fname)
+		if err != nil {
+			panic(err)
+		}
+		b.StopTimer()
 	}
 }

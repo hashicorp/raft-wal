@@ -548,6 +548,8 @@ func (w *WAL) runRotate() {
 	for {
 		indexStart := <-w.triggerRotate
 
+		w.writeMu.Lock()
+
 		// Either triggerRotate was closed by Close, or Close raced with a real
 		// trigger, either way shut down without changing anything else. In the
 		// second case the segment file is sealed but meta data isn't updated yet
@@ -555,15 +557,15 @@ func (w *WAL) runRotate() {
 		// not to try and complete the rotation here on an already-closed WAL.
 		closed := atomic.LoadUint32(&w.closed)
 		if closed == 1 {
+			w.writeMu.Unlock()
 			return
 		}
 
-		w.writeMu.Lock()
 		err := w.rotateSegmentLocked(indexStart)
 		if err != nil {
 			// The only possible errors indicate bugs and could probably validly be
 			// panics, but be conservative and just attempt to log them instead!
-			w.log.Error("%s", err)
+			w.log.Error("rotate error", "err", err)
 		}
 		done := w.awaitRotate
 		w.awaitRotate = nil
