@@ -230,18 +230,18 @@ default), we "seal" it. This process involves:
 
  1. Write out the in-memory index of record offsets to an index frame.
  2. Write a commit frame to validate all bytes appended in this final append
-    (which probably inclided one or more records too to take the segment file
-    over the limit).
- 3. Return the final MaxIndex and IndexStart to be stored in meta.db
+    (which probably included one or more records that took the segment file over
+    the limit).
+ 3. Return the final `IndexStart` to be stored in `wal-meta.db`
 
 Sealed files can have their indexes read directly on open from the IndexStart in
-meta.db so records can be looked but in constant time.
+`wal-meta.db` so records can be looked but in constant time.
 
 ## Log Lookup by Index
 
 For an unsealed segment we first lookup the offset in the in-memory index.
 
-For a sealed segment we can discover the index frame location from the meta data
+For a sealed segment we can discover the index frame location from the metadata
 and then perform a read at the right location in the file to lookup the record's
 offset. Implementations may choose to cache or memory map the index array but we
 will initially just read the specific entry we need each time and assume the OS
@@ -298,12 +298,11 @@ On startup we just need to recover the tail log as follows:
        anything after the last commit frame. We're DONE because we wouldn't have
        written extra frames after commit until fsync completed so this commit
        must have been acknowledged.
-    1. Else the file ends with a commit frame. Validate it's checksum. If it is good DONE.
+    1. Else the file ends with a commit frame. Validate its checksum. If it is good DONE.
     2. If CRC is not good then discard everything back to previous commit frame and DONE.
  4. If we read an index frame in that process and the commit frame proceeding it
     is the new tail then mark the segment as sealed and return the seal info
-    (crash occured after seal but before updating meta.db)
-
+    (crash occured after seal but before updating `wal-meta.db`)
 
 ## Head Truncations
 
@@ -385,12 +384,10 @@ We assume:
  1. That while silent latent errors are possible, they are generally rare and
     there's not a whole lot we can do other than return a `Corrupt` error on
     read. In most cases the hardware or filesystem will detect and return an
-    error on read anyway for latent corruption not doing so could be regarded as
-    a bug in the OS/filesystem/hardware. For this reason we don't go out of our
-    way to checksum everything to protect against "bitrot", but where checksums
-    exist and we know the corruption can't have been due to a torn write, we
-    return an error to users. This is roughly equivalent to assumptions in
-    BoltDB, LMDB and SQLite.
+    error on read anyway for latent corruption. Not doing so is regarded as a
+    bug in the OS/filesystem/hardware. For this reason we don't go out of our
+    way to checksum everything to protect against "bitrot". This is roughly
+    equivalent to assumptions in BoltDB, LMDB and SQLite.
 
     While we respect the work in [Protocol Aware Recovery for Consensus-based
     Storage](https://www.usenix.org/system/files/conference/fast18/fast18-alagappan.pdf)

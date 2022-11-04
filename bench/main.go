@@ -4,8 +4,11 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,6 +56,9 @@ func main() {
 	flag.BoolVar(&o.noFreelistSync, "no-fl-sync", false, "used to disable freelist sync in boltdb for v=bolt")
 	flag.Parse()
 
+	var outBuf bytes.Buffer
+	teeOut := io.MultiWriter(os.Stdout, &outBuf)
+
 	if o.dir == "" {
 		tmpDir, err := os.MkdirTemp("", "raft-wal-bench-*")
 		if err != nil {
@@ -76,33 +82,37 @@ func main() {
 			}
 		}
 	}
-	r := &appendRequesterFactory{opts: o}
+	r := &appendRequesterFactory{
+		opts:   o,
+		output: teeOut,
+	}
 	benchmark := bench.NewBenchmark(r, uint64(o.rate), 1, o.duration, 0)
 	summary, err := benchmark.Run()
 	if err != nil {
 		panic(err)
 	}
 
-	printHistogram("Good Append Latencies (ms)", summary.SuccessHistogram, 1_000_000)
+	printHistogram(teeOut, "Good Append Latencies (ms)", summary.SuccessHistogram, 1_000_000)
 
-	fmt.Println(summary)
-	summary.GenerateLatencyDistribution(nil, outFileName(o, "bench-result"))
+	fmt.Fprintln(teeOut, summary)
+	summary.GenerateLatencyDistribution(nil, outFileName(o, "append-lat"))
+	ioutil.WriteFile(outFileName(o, "stdout"), outBuf.Bytes(), 0644)
 }
 
-func outFileName(o opts, prefix string) string {
+func outFileName(o opts, suffix string) string {
 	version := o.version
 	if o.version == "bolt" && o.noFreelistSync {
 		version += "-nfls"
 	}
-	return fmt.Sprintf("%s-%s-s%d-n%d-r%d-seg%dm-pre%d-trail%d-tp%s-%s.txt", prefix,
+	return fmt.Sprintf("bench-result-%s-s%d-n%d-r%d-seg%dm-pre%d-trail%d-tp%s-%s-%s.txt",
 		o.duration, o.logSize, o.batchSize, o.rate, o.segSize, o.preLoadN,
-		o.truncateTrailingLogs, o.truncatePeriod, version)
+		o.truncateTrailingLogs, o.truncatePeriod, version, suffix)
 }
 
-func printHistogram(name string, h *hdrhistogram.Histogram, scale int64) {
-	fmt.Printf("\n==> %s\n", name)
-	fmt.Printf("  count    mean     p50     p99   p99.9     max\n")
-	fmt.Printf(" %6d  %6.0f  %6d  %6d  %6d  %6d\n",
+func printHistogram(f io.Writer, name string, h *hdrhistogram.Histogram, scale int64) {
+	fmt.Fprintf(f, "\n==> %s\n", name)
+	fmt.Fprintf(f, "  count    mean     p50     p99   p99.9     max\n")
+	fmt.Fprintf(f, " %6d  %6.0f  %6d  %6d  %6d  %6d\n",
 		h.TotalCount(),
 		h.Mean()/float64(scale),
 		h.ValueAtPercentile(50)/scale,
