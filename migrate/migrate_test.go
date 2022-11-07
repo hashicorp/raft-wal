@@ -91,7 +91,7 @@ func TestCopyLogs(t *testing.T) {
 			require.NoError(t, err, "failed copy")
 
 			if progress != nil {
-				close(progress)
+				// This loop will not return if progress wasn't closed.
 				for s := range progress {
 					t.Log(s)
 				}
@@ -206,8 +206,8 @@ func TestCopyStable(t *testing.T) {
 			}
 			require.NoError(t, err, "failed copy")
 
-			close(progress)
 			for s := range progress {
+				// This loop will not return if progress wasn't closed.
 				t.Log(s)
 			}
 

@@ -18,8 +18,15 @@ import (
 // delivered updates during the copy since it could take a while. Updates will
 // be delivered best-effort with a short wait of 1 millisecond. If the channel
 // blocks for longer updates may be lost. The caller should sufficiently buffer
-// it and ensure it's being drained as fast as needed.
+// it and ensure it's being drained as fast as needed. If non-nil progress will
+// be closed when the function returns.
 func CopyLogs(ctx context.Context, dst, src raft.LogStore, batchBytes int, progress chan<- string) error {
+	defer func() {
+		if progress != nil {
+			close(progress)
+		}
+	}()
+
 	st := time.Now()
 	update := func(message string, args ...interface{}) {
 		if progress == nil {
@@ -110,6 +117,12 @@ func CopyStable(ctx context.Context, dst, src raft.StableStore, extraKeys, extra
 	knownKeys := [][]byte{
 		[]byte("LastVoteCand"),
 	}
+
+	defer func() {
+		if progress != nil {
+			close(progress)
+		}
+	}()
 
 	update := func(message string, args ...interface{}) {
 		if progress == nil {
