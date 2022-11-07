@@ -25,7 +25,7 @@ type state struct {
 	// to provide a func that must be called when all current readers are done
 	// with this state. It's used for deferring closing and deleting old segments
 	// until we can be sure no reads are still in progress on them.
-	finalizer atomic.Value
+	finalizer atomic.Value // func()
 
 	nextSegmentID uint64
 	segments      *immutable.SortedMap[uint64, segmentState]

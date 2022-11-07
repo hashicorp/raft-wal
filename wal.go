@@ -50,7 +50,7 @@ type WAL struct {
 	// can be accessed without a lock when reading. We only support a single
 	// writer so all methods that mutate either the WAL state or append to the
 	// tail of the log must hold the writeMu until they complete all changes.
-	s atomic.Value
+	s atomic.Value // *state
 
 	// writeMu must be held when modifying s or while appending to the tail.
 	// Although we take care never to let readers block writer, we still only
