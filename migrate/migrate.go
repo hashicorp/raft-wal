@@ -4,6 +4,7 @@
 package migrate
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -18,7 +19,7 @@ import (
 // be delivered best-effort with a short wait of 1 millisecond. If the channel
 // blocks for longer updates may be lost. The caller should sufficiently buffer
 // it and ensure it's being drained as fast as needed.
-func CopyLogs(dst, src raft.LogStore, batchBytes int, progress chan<- string) error {
+func CopyLogs(ctx context.Context, dst, src raft.LogStore, batchBytes int, progress chan<- string) error {
 	st := time.Now()
 	update := func(message string, args ...interface{}) {
 		if progress == nil {
@@ -47,6 +48,9 @@ func CopyLogs(dst, src raft.LogStore, batchBytes int, progress chan<- string) er
 	totalBytes := 0
 	update("starting to copy %d log entries with indexes [%d, %d]", total, first, last)
 	for idx := first; idx <= last; idx++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		var log raft.Log
 		n++
 		err := src.GetLog(idx, &log)
@@ -97,7 +101,7 @@ func CopyLogs(dst, src raft.LogStore, batchBytes int, progress chan<- string) er
 // interface method they were written with - we don't assume all implementations
 // share a key space for Set and SetUint64. Both can be nil for just the
 // standard raft keys to be copied.
-func CopyStable(dst, src raft.StableStore, extraKeys, extraIntKeys [][]byte, progress chan<- string) error {
+func CopyStable(ctx context.Context, dst, src raft.StableStore, extraKeys, extraIntKeys [][]byte, progress chan<- string) error {
 	// https://github.com/hashicorp/raft/blob/44124c28758b8cfb675e90c75a204a08a84f8d4f/raft.go#L22-L26
 	knownIntKeys := [][]byte{
 		[]byte("CurrentTerm"),
@@ -121,6 +125,9 @@ func CopyStable(dst, src raft.StableStore, extraKeys, extraIntKeys [][]byte, pro
 	update("copying %d int, %d regular KVs", len(knownIntKeys)+len(extraIntKeys),
 		len(knownKeys)+len(extraKeys))
 	for _, k := range append(knownIntKeys, extraIntKeys...) {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		v, err := src.GetUint64(k)
 		if err != nil {
 			return fmt.Errorf("failed to read int key %s: %w", k, err)
@@ -132,6 +139,9 @@ func CopyStable(dst, src raft.StableStore, extraKeys, extraIntKeys [][]byte, pro
 		update("  copied int %s => %d", k, v)
 	}
 	for _, k := range append(knownKeys, extraKeys...) {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		v, err := src.Get(k)
 		if err != nil {
 			return fmt.Errorf("failed to read key %s: %w", k, err)

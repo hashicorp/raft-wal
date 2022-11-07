@@ -4,6 +4,7 @@
 package migrate
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"strings"
@@ -23,6 +24,8 @@ func TestCopyLogs(t *testing.T) {
 		batchBytes     int
 		wantNumBatches int
 		nilChan        bool
+		cancelCtx      bool
+		wantErr        string
 	}{
 		{
 			name:       "basic copy",
@@ -51,6 +54,15 @@ func TestCopyLogs(t *testing.T) {
 			// A nil progress chan shouldn't block the copy.
 			nilChan: true,
 		},
+		{
+			name:           "context cancel",
+			startIndex:     1234,
+			numLogs:        1000,
+			batchBytes:     580,
+			wantNumBatches: 0,
+			cancelCtx:      true,
+			wantErr:        "context canceled",
+		},
 	}
 
 	for _, tc := range cases {
@@ -64,7 +76,18 @@ func TestCopyLogs(t *testing.T) {
 				progress = make(chan string, tc.wantNumBatches*3)
 			}
 
-			err := CopyLogs(dst, src, tc.batchBytes, progress)
+			ctx := context.Background()
+			if tc.cancelCtx {
+				cancelledCtx, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = cancelledCtx
+			}
+
+			err := CopyLogs(ctx, dst, src, tc.batchBytes, progress)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
 			require.NoError(t, err, "failed copy")
 
 			if progress != nil {
@@ -104,6 +127,8 @@ func TestCopyStable(t *testing.T) {
 		extraKeys    [][]byte
 		extraIntKeys [][]byte
 		nilChan      bool
+		cancelCtx    bool
+		wantErr      string
 	}{
 		{
 			name: "basic raft data",
@@ -114,6 +139,18 @@ func TestCopyStable(t *testing.T) {
 				"CurrentTerm":  1234,
 				"LastVoteTerm": 1000,
 			},
+		},
+		{
+			name: "context cancelled",
+			srcVals: map[string]string{
+				"LastVoteCand": "s1",
+			},
+			srcIntVals: map[string]uint64{
+				"CurrentTerm":  1234,
+				"LastVoteTerm": 1000,
+			},
+			cancelCtx: true,
+			wantErr:   "context canceled",
 		},
 		{
 			name: "additional keys",
@@ -156,7 +193,17 @@ func TestCopyStable(t *testing.T) {
 				progress = make(chan string, (len(tc.srcIntVals)+len(tc.srcVals))*3)
 			}
 
-			err := CopyStable(dst, src, tc.extraKeys, tc.extraIntKeys, progress)
+			ctx := context.Background()
+			if tc.cancelCtx {
+				cancelledCtx, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = cancelledCtx
+			}
+			err := CopyStable(ctx, dst, src, tc.extraKeys, tc.extraIntKeys, progress)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
 			require.NoError(t, err, "failed copy")
 
 			close(progress)
