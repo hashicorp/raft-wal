@@ -767,8 +767,16 @@ func TestConcurrentReadersAndWriter(t *testing.T) {
 			if err != nil {
 				panic("error fetching first: " + err.Error())
 			}
-			if first != last-99 {
-				panic(fmt.Sprintf("truncate didn't work, expected first=%d got first=%d", last-99, first))
+			expectFirst := last - 99
+			if expectFirst < 1000 {
+				// The writer starts at 1000 so if we happen to run a truncate before
+				// 100 entries are appended (which happened in CI due to timing
+				// differences) then our append would not have done anything and first
+				// will still be 1000.
+				expectFirst = 1000
+			}
+			if first != expectFirst {
+				panic(fmt.Sprintf("head truncate didn't work, expected first=%d got first=%d", expectFirst, first))
 			}
 			t.Logf("truncated head to %d", last-99)
 		}
