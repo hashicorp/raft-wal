@@ -44,25 +44,23 @@ safety](#crash-safety) sections for more details.
 
 ## Limitations
 
-Here are some notable limitations of this design.
+Here are some notable (but we think acceptable) limitations of this design.
 
- * Segment files can't be larger than 4GiB. (Current limit/default is 64MiB).
- * Individual records can't be larger than 4GiB.  (Current limit/default is 64MiB).
- * Appended log entries have monotonically increasing `Index` fields with no
-   gaps (though may start at any index in an empty log).
- * Only head or tail truncations are needed. `DeleteRange` will error if it's
-   not a prefix of suffix of the log. `hashicorp/raft` never needs that.
+ * Segment files can't be larger than 4GiB. (Current default is 64MiB).
+ * Individual records can't be larger than 4GiB.  (Current limit is 64MiB).
+ * Appended log entries must have monotonically increasing `Index` fields with
+   no gaps (though may start at any index in an empty log).
+ * Only head or tail truncations are needed. `DeleteRange` will error if the
+   range is not a prefix of suffix of the log. `hashicorp/raft` never needs
+   that.
  * No encryption or compression support.
    * Though we do provide a pluggable entry codec and internally treat each
      entry as opaque bytes so it's possible to supply a custom codec that
      transforms entries in any way desired.
- * For now segments are a fixed size and pre-allocated.
 
 ## Storage Format Overview
 
 The WAL has two types of file: a meta store and one or more log segments.
-
-All integers are encoded in little-endian byte order on disk.
 
 ### Meta Store
 
@@ -106,28 +104,37 @@ type SegmentInfo struct {
 
 The last segment (with highest key) is the "tail" and must be the only one where
 `SealTime = 0`. `IndexStart` and `MaxIndex` are also zero until the segments is
-sealed too.
+sealed.
 
-BoltDB's major performance issue currently is when large amounts of logs are
-written and then truncated, the overhead of tracking all the freespace in the
-file makes further appends slower as well as the file never shrinking again
-(though disk space is rarely a real bottleneck).
+Why use BoltDB when the main reason for this library is because the existing
+BoltDB one has performance issues?
 
-Our use here is orders of magnitude lighter. Even if we allow 100GiB of logs to
-be kept around, that is at least an order of magnitude larger than the largest
-current known Consul user's worst-case log size, and two orders of magnitude
-more than the largest Consul deployments steady-state. Assuming fixed 64MiB
-segments, that would require about 1600 segments which encode to about 125 bytes
-in JSON each. Even at this extreme, the meta DB only has to hold under 200KiB.
+Well, the major performance issue in `raft-boltdb` occurs when a large amount of
+log data is written and then truncated, the overhead of tracking all the free
+space in the file makes further appends slower as well as the file never
+shrinking again (though disk space is rarely a real bottleneck).
+
+Our use here is orders of magnitude lighter than storing all log data. As an
+example, let's assume we allow 100GiB of logs to be kept around which is at
+least an order of magnitude larger than the largest current known Consul user's
+worst-case log size, and two orders of magnitude more than the largest Consul
+deployments steady-state. Assuming fixed 64MiB segments, that would require
+about 1600 segments which encode to about 125 bytes in JSON each. Even at this
+extreme, the meta DB only has to hold under 200KiB.
 
 Even if a truncation occurs that reduces that all the way back to a single
 segment, 200KiB is only a hundred or so pages (allowing for btree overhead) so
-the freelist will never be larger than a single 4KB page.
+the free list will never be larger than a single 4KB page.
+
+On top of that, we only pay the cost of a write to BoltDB for meta-data
+transactions: rotating to a new segment, or truncating. The vast majority of
+appends only need to append to a log segment.
 
 ### Segment Files
 
 Segment files are pre-allocated (best effort) on creation to a fixed size, by
-default we use 64MiB segment files.
+default we use 64MiB segment files. This sections defines the encoding for those
+files. All integer types are encoded in little-endian order.
 
 The file starts with a fixed-size header that is written once on creation.
 
@@ -156,7 +163,8 @@ The file starts with a fixed-size header that is written once on creation.
 Each segment file is named `<BaseIndex>-<SegmentID>.wal`. `BaseIndex` is
 formatted in decimal with leading zeros and a fixed width of 20 chars.
 `SegmentID` is formatted in lower-case hex with zero padding to 16 chars wide.
-File names are also used as meta DB keys so need to sort lexicographically.
+This has the nice property of them sorting lexicographically in the directory,
+although we don't rely on that.
 
 ### Frames
 
