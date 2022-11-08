@@ -1,16 +1,21 @@
-# WAL Design
+# Raft WAL
 
-This document describes the design considerations for a Write-Ahead Log (WAL)
-suitable for use with [`hashicorp/raft`](https://github.com/hashicorp/raft).
+This library implements a Write-Ahead Log (WAL) suitable for use with
+[`hashicorp/raft`](https://github.com/hashicorp/raft).
 
-Specifically the library provides and instance of raft's `LogStore` and also
+Specifically the library provides and instance of raft's `LogStore` and
 `StableStore` interfaces for storing both raft logs and the other small items
-that require stable storage (like which term we voted in).
+that require stable storage (like which term the node last voted in).
 
-The advantage of this library over the `raft-boltdb` one that has been used
-typically are:
+**This library is still considered experimental!** It is complete and reasonably
+well tested so far but we plan to complete more rigorous end-to-end testing and
+performance analysis within our products and together with some of our users
+before we consider this safe for production.
+
+The advantage of this library over `hashicorp/raft-boltdb` that has been used
+for many years in HashiCorp products are:
  1. Efficient truncations that don't cause later appends to slow down due to
-    freespace tracking issues in BoltDB's btree.
+    free space tracking issues in BoltDB's btree.
  2. More efficient appends due to only one fsync per append vs two in BoltDB.
  3. More efficient and suitable on-disk structure for a log vs a copy-on-write
     BTree.
