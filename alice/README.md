@@ -39,8 +39,8 @@ We run each one separately using a make/env variable:
     It also creates and mounts `./traces_dir` to which strace output
     (checker input) and any failed test cases are copied for debugging.
 
-    It takes about an hour to run all `append` tests currently on my i9 (8 core)
-    MacBook. But much less for the other ones.
+    It takes about 50-60 minutes to run all `append` tests currently on my i9 (8
+    core) MacBook. It's much less for the truncate ones with shorter traces.
 
 ## Run Workload and Checker locally
 

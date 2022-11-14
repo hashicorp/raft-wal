@@ -126,8 +126,8 @@ func validateFirst(first uint64, expect runSummary) error {
 
 	default:
 		// No head truncations can have started yet.
-		if first != 1 {
-			return fmt.Errorf("Want first=1 before any truncation. Got %d", first)
+		if first != 1 && first != 0 {
+			return fmt.Errorf("Want first=1 or first=0 (if no writes yet) before any truncation. Got %d", first)
 		}
 	}
 	return nil
