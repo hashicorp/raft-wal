@@ -100,13 +100,16 @@ func runTruncate(o opts) error {
 	switch o.truncType {
 	case "head":
 		// Remove the first two segments
+		fmt.Printf("willTruncateBefore=46\n")
 		err = w.DeleteRange(0, 45)
 		fmt.Printf("truncatedBefore=46\n")
 	case "tail":
 		// Remove the last two segments
+		fmt.Printf("willTruncateAfter=34\n")
 		err = w.DeleteRange(35, 100)
 		fmt.Printf("truncatedAfter=34\n")
 	case "all":
+		fmt.Printf("willTruncateAfter=0\n")
 		err = w.DeleteRange(0, 100)
 		fmt.Printf("truncatedAfter=0\n")
 	}
