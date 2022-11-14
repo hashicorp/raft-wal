@@ -71,6 +71,8 @@ type SegmentFiler interface {
 	// RecoverTail is called on an unsealed segment when re-opening the WAL it
 	// will attempt to recover from a possible crash. It will either return an
 	// error, or return a valid segmentWriter that is ready for further appends.
+	// If the expected tail segment doesn't exist it must return an error wrapping
+	// os.ErrNotExist.
 	RecoverTail(info SegmentInfo) (SegmentWriter, error)
 
 	// Open an already sealed segment for reading. Open may validate the file's
