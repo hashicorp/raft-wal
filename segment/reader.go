@@ -5,6 +5,7 @@ package segment
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -61,7 +62,21 @@ func (r *Reader) GetLog(idx uint64) (*types.PooledBuffer, error) {
 func (r *Reader) readFrame(offset uint32) (frameHeader, *types.PooledBuffer, error) {
 	buf := r.makeBuffer()
 
-	if _, err := r.rf.ReadAt(buf.Bs, int64(offset)); err != nil {
+	n, err := r.rf.ReadAt(buf.Bs, int64(offset))
+	if errors.Is(err, io.EOF) && n >= frameHeaderLen {
+		// We might have hit EOF just because our read buffer (at least 64KiB) might
+		// be larger than the space left in the file (say if files are tiny or if we
+		// are reading a frame near the end.). So don't treat EOF as an error as
+		// long as we have actually managed to read a frameHeader - we'll work out
+		// if we got the whole thing or not below.
+		err = nil
+
+		// Re-slice buf.Bs so it's len() reflect only what we actually managed to
+		// read. Note this doesn't impact the buffer length when it's returned to
+		// the pool which will still return the whole cap.
+		buf.Bs = buf.Bs[:n]
+	}
+	if err != nil {
 		return frameHeader{}, nil, err
 	}
 	fh, err := readFrameHeader(buf.Bs)

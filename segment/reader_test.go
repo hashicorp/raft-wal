@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type entryDesk struct {
+type entryDesc struct {
 	len, num int
 }
 
@@ -21,22 +21,24 @@ func TestReader(t *testing.T) {
 	cases := []struct {
 		name          string
 		firstIndex    uint64
-		entries       []entryDesk
+		entries       []entryDesc
 		wantLastIndex uint64
 		wantOpenErr   string
 	}{
 		{
 			name:       "basic sealed",
 			firstIndex: 1,
-			entries: []entryDesk{
-				{len: 128, num: 28}, // 4KiB segment size
+			entries: []entryDesc{
+				// 28 * 128 bytes entries are all that will fit in a 4KiB segment after
+				// headers and index size are accounted for.
+				{len: 128, num: 28},
 			},
 			wantLastIndex: 28,
 		},
 		{
 			name:       "value larger than minBufSize",
 			firstIndex: 1,
-			entries: []entryDesk{
+			entries: []entryDesc{
 				{len: 128, num: 5},
 				{len: minBufSize + 10, num: 1},
 			},
@@ -60,6 +62,7 @@ func TestReader(t *testing.T) {
 			// Append previous entries. We just pick a fixed size and format that's
 			// easy to verify but generally fits in our test block size.
 			idx := tc.firstIndex
+			wantLength := make(map[uint64]int)
 			for _, desc := range tc.entries {
 				// Append individually, could do commit batches but this is all in
 				// memory so no real benefit.
@@ -72,6 +75,7 @@ func TestReader(t *testing.T) {
 					v := fmt.Sprintf("%05d:%s", idx, padding)
 					err := w.Append([]types.LogEntry{{Index: idx, Data: []byte(v)}})
 					require.NoError(t, err, "error appending entry idx=%d", idx)
+					wantLength[idx] = desc.len
 					idx++
 				}
 			}
@@ -99,6 +103,7 @@ func TestReader(t *testing.T) {
 				got, err := r.GetLog(idx)
 				require.NoError(t, err, "error reading idx=%d", idx)
 				require.True(t, strings.HasPrefix(string(got.Bs), fmt.Sprintf("%05d:", idx)), "bad value for idx=%d", idx)
+				require.Len(t, string(got.Bs), wantLength[idx])
 			}
 
 			// And we should _not_ read one either side

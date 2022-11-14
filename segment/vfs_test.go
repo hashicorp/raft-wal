@@ -226,16 +226,23 @@ func (f *testWritableFile) ReadAt(p []byte, off int64) (n int, err error) {
 	if int(off) >= cap(buf) {
 		return 0, io.EOF
 	}
+	// Work out how many bytes we have to read left in the "file"
+	n = cap(buf) - int(off)
+	if n < len(p) {
+		// We can't fill p as there are not enough bytes left in the "file" so
+		// whatever we do read, also return EOF like a real file does.
+		err = io.EOF
+	}
 	if off >= int64(len(buf)) {
 		// Offset is within capacity of "file" but after the maximum visible byte so
 		// just return empty bytes.
 		for i := 0; i < len(p); i++ {
 			p[i] = 0
 		}
-		return len(p), nil
+		return n, err
 	}
-	copy(p, buf[off:])
-	return len(p), nil
+	n = copy(p, buf[off:])
+	return n, err
 }
 
 func (f *testWritableFile) Close() error {
