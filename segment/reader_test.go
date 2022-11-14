@@ -22,6 +22,7 @@ func TestReader(t *testing.T) {
 		name          string
 		firstIndex    uint64
 		entries       []entryDesc
+		corrupt       func(twf *testWritableFile) error
 		wantLastIndex uint64
 		wantOpenErr   string
 	}{
@@ -43,6 +44,18 @@ func TestReader(t *testing.T) {
 				{len: minBufSize + 10, num: 1},
 			},
 			wantLastIndex: 6,
+		},
+		{
+			name:       "sealed file truncated",
+			firstIndex: 1,
+			entries: []entryDesc{
+				{len: 128, num: 28},
+			},
+			corrupt: func(twf *testWritableFile) error {
+				twf.Truncate(0)
+				return nil
+			},
+			wantOpenErr: "corrupt",
 		},
 	}
 
@@ -84,6 +97,11 @@ func TestReader(t *testing.T) {
 			sealed, indexStart, err := w.Sealed()
 			require.NoError(t, err)
 			require.True(t, sealed)
+
+			if tc.corrupt != nil {
+				file := testFileFor(t, w)
+				require.NoError(t, tc.corrupt(file))
+			}
 
 			seg0.IndexStart = indexStart
 			seg0.MaxIndex = w.LastIndex()

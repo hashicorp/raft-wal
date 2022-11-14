@@ -6,7 +6,6 @@ package segment
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -178,20 +177,6 @@ func TestRecovery(t *testing.T) {
 			wantLastIndex: 10,
 		},
 		{
-			name:               "empty file",
-			numPreviousEntries: 0,
-			appendEntrySizes:   []int{},
-			corrupt: func(twf *testWritableFile) error {
-				// replace buf with an zero-capacity buffer to simulate zero length file
-				twf.buf.Store([]byte{})
-				twf.dirty = false
-				twf.maxWritten = 0
-				return nil
-			},
-			// should throw an EOF error on recover as there is no file header to verify
-			wantErr: io.EOF.Error(),
-		},
-		{
 			name: "bad segment header, valid commit",
 			// This makes two commits which means header must have been committed so
 			// must be validated.
@@ -269,6 +254,18 @@ func TestRecovery(t *testing.T) {
 			// Note that we'll implicitly test we can read all the indexes through the
 			// reader after recovery. That's a different path to reading frm the
 			// on-disk index though which is tested in reader_test.go
+		},
+		{
+			name:               "ALICE fail: allow recovery from empty tail file",
+			numPreviousEntries: 0,
+			appendEntrySizes:   []int{},
+			corrupt: func(twf *testWritableFile) error {
+				// Simulate crash before we wrote the header or any data
+				twf.Truncate(0)
+				return nil
+			},
+			// Recovery should succeed without error just with an empty WAL
+			wantLastIndex: 0,
 		},
 	}
 

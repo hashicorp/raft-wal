@@ -174,6 +174,23 @@ func (f *testWritableFile) getBuf() []byte {
 	return f.buf.Load().([]byte)
 }
 
+// Truncate allows us to simulate the file being a different length to expected
+// for example due to a crash.
+func (f *testWritableFile) Truncate(size int) {
+	buf := f.getBuf()
+
+	// We use buffer capacity as a proxy for "file size" so we need a new buffer
+	// with the right capacity. We'll slice it to the minimum of the new len or
+	// the current len.
+	l := len(buf)
+	if size < l {
+		l = size
+	}
+	newBuf := make([]byte, l, size)
+	f.buf.Store(newBuf)
+	f.maxWritten = l
+}
+
 func (f *testWritableFile) Dump() string {
 	var buf bytes.Buffer
 	d := hex.Dumper(&buf)

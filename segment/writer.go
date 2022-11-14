@@ -81,17 +81,6 @@ func createFile(info types.SegmentInfo, wf types.WritableFile, bufPool *sync.Poo
 }
 
 func recoverFile(info types.SegmentInfo, wf types.WritableFile, bufPool *sync.Pool) (*Writer, error) {
-	// Read header
-	var hdr [fileHeaderLen]byte
-	if _, err := wf.ReadAt(hdr[:], 0); err != nil {
-		return nil, err
-	}
-	// // TODO since we don't fsync after header write we need to allow for the
-	// // header to be partially written without failing (it just means the file has
-	// // zero committed data and can be discarded).
-	// if err := validateFileHeader(hdr[:], info); err != nil {
-	// 	return nil, err
-	// }
 	r, err := openReader(info, wf, bufPool)
 	if err != nil {
 		return nil, err

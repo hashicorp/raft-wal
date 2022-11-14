@@ -4,7 +4,9 @@
 package segment
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 
@@ -59,9 +61,11 @@ func (f *Filer) Create(info types.SegmentInfo) (types.SegmentWriter, error) {
 	return createFile(info, wf, &f.bufPool)
 }
 
-// RecoverTail is called on an unsealed segment when re-opening the WAL it
-// will attempt to recover from a possible crash. It will either return an
-// error, or return a valid segmentWriter that is ready for further appends.
+// RecoverTail is called on an unsealed segment when re-opening the WAL it will
+// attempt to recover from a possible crash. It will either return an error, or
+// return a valid segmentWriter that is ready for further appends. If the
+// expected tail segment doesn't exist it must return an error wrapping
+// os.ErrNotExist.
 func (f *Filer) RecoverTail(info types.SegmentInfo) (types.SegmentWriter, error) {
 	fname := FileName(info)
 
@@ -89,6 +93,13 @@ func (f *Filer) Open(info types.SegmentInfo) (types.SegmentReader, error) {
 	var hdr [fileHeaderLen]byte
 
 	if _, err := rf.ReadAt(hdr[:], 0); err != nil {
+		if errors.Is(err, io.EOF) {
+			// Treat failure to read a header as corruption since a sealed file should
+			// never not have a valid header. (I.e. even if crashes happen it should
+			// be impossible to seal a segment with no header written so this
+			// indicates that something truncated the file after the fact)
+			return nil, fmt.Errorf("%w: failed to read header: %s", types.ErrCorrupt, err)
+		}
 		return nil, err
 	}
 
