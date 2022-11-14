@@ -18,6 +18,7 @@ func TestMetaDB(t *testing.T) {
 		name        string
 		writeState  *types.PersistentState
 		writeStable map[string][]byte
+		failSim     func()
 	}{
 		{
 			name:       "basic storage",

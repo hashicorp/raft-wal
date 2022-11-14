@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/hashicorp/raft-wal/types"
@@ -47,29 +48,102 @@ func (db *BoltMetaDB) ensureOpen(dir string) error {
 		return nil
 	}
 
-	db.dir = dir
+	fileName := filepath.Join(dir, FileName)
 
-	bb, err := bbolt.Open(filepath.Join(dir, FileName), 0644, nil)
-	if err != nil {
-		return fmt.Errorf("failed to open %s: %w", FileName, err)
+	open := func() error {
+		bb, err := bbolt.Open(fileName, 0644, nil)
+		if err != nil {
+			return fmt.Errorf("failed to open %s: %w", FileName, err)
+		}
+		db.db = bb
+		db.dir = dir
+		return nil
 	}
-	db.db = bb
 
-	tx, err := db.db.Begin(true)
+	// BoltDB can get stuck in invalid states if we crash while it's initializing.
+	// We can't distinguish those as safe to just wipe it and start again because
+	// we don't know for sure if it's failing due to bad init or later corruption
+	// (which would loose data if we just wipe and start over). So to ensure
+	// initial creation of the WAL is as crash-safe as possible we will manually
+	// detect we have an atomic init procedure:
+	//  1. Check if file exits already. If yes, skip init and just open it.
+	//  2. Delete any existing DB file with tmp name
+	//  3. Creat a new BoltDB that is empty and has the buckets with a temp name.
+	//  4. Once that's committed, rename to final name and Fsync parent dir
+	_, err := os.Stat(fileName)
+	if err == nil {
+		// File exists, just open it
+		return open()
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		// Unknown err just return that
+		return fmt.Errorf("failed to stat %s: %w", FileName, err)
+	}
+
+	// File doesn't exist, initialize a new DB in a crash-safe way
+	if err := safeInitBoltDB(dir); err != nil {
+		return fmt.Errorf("failed initializing meta DB: %w", err)
+	}
+
+	// All good, now open it!
+	return open()
+}
+
+func safeInitBoltDB(dir string) error {
+	tmpFileName := filepath.Join(dir, FileName+".tmp")
+
+	// Delete any old attempts to init that were unsuccessful
+	if err := os.RemoveAll(tmpFileName); err != nil {
+		return err
+	}
+
+	// Open bolt DB at tmp file name
+	bb, err := bbolt.Open(tmpFileName, 0644, nil)
+	if err != nil {
+		return err
+	}
+
+	tx, err := bb.Begin(true)
 	defer tx.Rollback()
 
 	if err != nil {
 		return err
 	}
-	_, err = tx.CreateBucketIfNotExists([]byte(MetaBucket))
+	_, err = tx.CreateBucket([]byte(MetaBucket))
 	if err != nil {
 		return err
 	}
-	_, err = tx.CreateBucketIfNotExists([]byte(StableBucket))
+	_, err = tx.CreateBucket([]byte(StableBucket))
 	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Close the file ready to rename into place and re-open. This probably isn't
+	// necessary but it make it easier to reason about this code path being
+	// totally separate from the common case.
+	if err := bb.Close(); err != nil {
+		return err
+	}
+
+	// We created the DB OK. Now rename it to the final name.
+	if err := os.Rename(tmpFileName, filepath.Join(dir, FileName)); err != nil {
+		return err
+	}
+
+	// And Fsync that parent dir to make sure the new new file with it's new name
+	// is persisted!
+	dirF, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = dirF.Sync()
+	closeErr := dirF.Close()
+	if err != nil {
+		return err
+	}
+	return closeErr
 }
 
 // Load loads the existing persisted state. If there is no existing state
