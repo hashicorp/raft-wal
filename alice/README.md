@@ -22,18 +22,43 @@ README](https://github.com/banks/alice#changes-in-this-fork).
 
 To run these test, you need Docker installed.
 
+There are a few different test workloads:
+ - `append`
+ - `truncate-head`
+ - `truncate-tail`
+ - `truncate-all`
+
+We run each one separately using a make/env variable:
+
  1. `$ cd alice`
     Switch to the alice dir for all the below commands.
- 2. `make test`
+ 2. `make test WORKLOAD=append`
     This executes the `run-workload.sh` in the Docker container which runs the
-    workload and the checker.
+    init process, workload and the checker.
 
     It also creates and mounts `./traces_dir` to which strace output
     (checker input) and any failed test cases are copied for debugging.
 
-    It takes about an hour to run all tests currently on my i9 (8 core) MacBook.
+    It takes about an hour to run all `append` tests currently on my i9 (8 core)
+    MacBook. But much less for the other ones.
 
-## Debug Failure
+## Run Workload and Checker locally
+
+When developing new tests it's easier to be able to compile and run them locally
+first. Also use this if ALICE complains with an error like this:
+
+```
+WARNING: Application found to be inconsistent after the entire workload completes. Recheck workload and checker. Possible bug in ALICE framework if this is not expected.
+```
+
+ 1. `$ cd alice`
+    Ensure you are in the alice dir for all the below commands.
+ 2. `make test-local WORKLOAD=$YOUR_WORKLOAD`
+
+This compiles and runs the workload and checker locally on your machine and
+stitches together the three commands as a convenience.
+
+## Debug an ALICE Failure
 
 Understanding the failures is complex and we'll discuss in much more detail
 below but we'll continue the cheat sheet on how to use this first. When there is
