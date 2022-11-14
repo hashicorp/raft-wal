@@ -57,6 +57,16 @@ Here are some notable (but we think acceptable) limitations of this design.
    * Though we do provide a pluggable entry codec and internally treat each
      entry as opaque bytes so it's possible to supply a custom codec that
      transforms entries in any way desired.
+ * If the segment tail file is lost _after_ entries are committed to it due to
+   manual intervention or filesystem bug, the WAL can't distinguish that from a
+   crash during rotation that left the file missing since we don't update
+   metadata on every append for performance reasons. In most other cases,
+   missing data would be detected on recovery and fail the recovery to protect
+   from silent data loss, but in this particular case that's not possible
+   without significantly impacting performance in the steady state by updating
+   the last committed entry to meta DB on every append. We assume this is
+   reasonable since previous LogStore implementations would also "silently"
+   loose data if the database files were removed too.
 
 ## Storage Format Overview
 

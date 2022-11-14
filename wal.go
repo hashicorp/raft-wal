@@ -6,8 +6,10 @@ package wal
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -138,6 +140,17 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 
 			// Try to recover this segment
 			sw, err := w.sf.RecoverTail(si)
+			if errors.Is(err, os.ErrNotExist) {
+				// Handle no file specially. This can happen if we crashed right after
+				// persisting the metadata but before we managed to persist the new
+				// file. In fact it could happen if the whole machine looses power any
+				// time before the fsync of the parent dir since the FS could loose the
+				// dir entry for the new file until that point. We do ensure we pass
+				// that point before we return from Append for the first time in that
+				// new file so that's safe, but we have to handle recovering from that
+				// case here.
+				sw, err = w.sf.Create(si)
+			}
 			if err != nil {
 				return nil, err
 			}

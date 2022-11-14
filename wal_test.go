@@ -165,6 +165,28 @@ func TestWALOpen(t *testing.T) {
 			expectErr:         "unsealed segment is not at tail",
 			ignoreInvalidMeta: true, // disable the test's setup checks on validity
 		},
+		{
+			name: "ALICE fail: recovering with a missing tail file should work",
+			tsOpts: []testStorageOpt{
+				segFull(),
+				segTail(0),
+				func(ts *testStorage) {
+					// Simulate the tail file not being created yet after a crash.
+					ts.Delete(101, 101)
+				},
+			},
+			expectSegmentBases: []uint64{1, 101},
+			expectCalls: map[string]int{
+				"List":        1,
+				"Load":        1,
+				"RecoverTail": 1,
+				"Open":        1,
+				"Create":      1,
+				"Delete":      1, // This one is called by us above not the WAL
+			},
+			expectFirstIndex: 1,
+			expectLastIndex:  100,
+		},
 	}
 
 	for _, tc := range cases {
@@ -205,10 +227,10 @@ func TestWALOpen(t *testing.T) {
 			// Validate the data was recovered and is readable
 			first, err := w.FirstIndex()
 			require.NoError(t, err)
-			require.Equal(t, tc.expectFirstIndex, first)
+			require.Equal(t, int(tc.expectFirstIndex), int(first))
 			last, err := w.LastIndex()
 			require.NoError(t, err)
-			require.Equal(t, tc.expectLastIndex, last)
+			require.Equal(t, int(tc.expectLastIndex), int(last))
 
 			// Every index between first and last inclusive should be readable
 			var log, log2 raft.Log

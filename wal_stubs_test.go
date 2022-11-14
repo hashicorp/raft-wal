@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -383,7 +384,9 @@ func (ts *testStorage) RecoverTail(info types.SegmentInfo) (types.SegmentWriter,
 	// Safety checks
 	sw, ok := ts.segments[info.ID]
 	if !ok {
-		return nil, fmt.Errorf("can't recover unknown segment with ID %d", info.ID)
+		// Simulate the right error - if this segment file isn't here then it's an
+		// os.ErrNotExist
+		return nil, fmt.Errorf("%w: can't recover unknown segment with ID %d", os.ErrNotExist, info.ID)
 	}
 
 	if ts.recoverErr != nil {
