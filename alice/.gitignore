@@ -1,0 +1,4 @@
+bin
+*.gdb
+traces_dir
+workload_dir
