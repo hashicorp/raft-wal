@@ -7,10 +7,11 @@ Specifically the library provides and instance of raft's `LogStore` and
 `StableStore` interfaces for storing both raft logs and the other small items
 that require stable storage (like which term the node last voted in).
 
-**This library is still considered experimental!** It is complete and reasonably
-well tested so far but we plan to complete more rigorous end-to-end testing and
-performance analysis within our products and together with some of our users
-before we consider this safe for production.
+**This library is still considered experimental!** 
+
+It is complete and reasonably well tested so far but we plan to complete more 
+rigorous end-to-end testing and performance analysis within our products and 
+together with some of our users before we consider this safe for production.
 
 The advantage of this library over `hashicorp/raft-boltdb` that has been used
 for many years in HashiCorp products are:
@@ -47,10 +48,11 @@ safety](#crash-safety) sections for more details.
 Here are some notable (but we think acceptable) limitations of this design.
 
  * Segment files can't be larger than 4GiB. (Current default is 64MiB).
- * Individual records can't be larger than 4GiB.  (Current limit is 64MiB).
+ * Individual records can't be larger than 4GiB without changing the format. 
+   (Current limit is 64MiB).
  * Appended log entries must have monotonically increasing `Index` fields with
    no gaps (though may start at any index in an empty log).
- * Only head or tail truncations are needed. `DeleteRange` will error if the
+ * Only head or tail truncations are supported. `DeleteRange` will error if the
    range is not a prefix of suffix of the log. `hashicorp/raft` never needs
    that.
  * No encryption or compression support.
@@ -112,17 +114,16 @@ type SegmentInfo struct {
 }
 ```
 
-The last segment (with highest key) is the "tail" and must be the only one where
-`SealTime = 0`. `IndexStart` and `MaxIndex` are also zero until the segments is
-sealed.
+The last segment (with highest baseIndex) is the "tail" and must be the only one where
+`SealTime = 0` (i.e. it's unsealed). `IndexStart` and `MaxIndex` are also zero until 
+the segments is sealed.
 
 Why use BoltDB when the main reason for this library is because the existing
-BoltDB one has performance issues?
+BoltDB `LogStore` has performance issues?
 
 Well, the major performance issue in `raft-boltdb` occurs when a large amount of
 log data is written and then truncated, the overhead of tracking all the free
-space in the file makes further appends slower as well as the file never
-shrinking again (though disk space is rarely a real bottleneck).
+space in the file makes further appends slower.
 
 Our use here is orders of magnitude lighter than storing all log data. As an
 example, let's assume we allow 100GiB of logs to be kept around which is at
@@ -142,11 +143,12 @@ appends only need to append to a log segment.
 
 ### Segment Files
 
-Segment files are pre-allocated (best effort) on creation to a fixed size, by
-default we use 64MiB segment files. This sections defines the encoding for those
-files. All integer types are encoded in little-endian order.
+Segment files are pre-allocated (if supported by the filesystem) on creation to 
+a fixed size. By default we use 64MiB segment files. This sections defines the 
+encoding for those files. All integer types are encoded in little-endian order.
 
-The file starts with a fixed-size header that is written once on creation.
+The file starts with a fixed-size header that is written once before the 
+first comitted entries.
 
 ```
 0      1      2      3      4      5      6      7      8
@@ -192,7 +194,7 @@ an 8-byte header.
 | Field         | Type        | Description |
 | ------------- | ----------- | ----------- |
 | `Type`        | `uint8`     | The frame type. See below. |
-| `Length/CRC` | `uint32`    | Depends on Type. See Below |
+| `Length/CRC`  | `uint32`    | Depends on Type. See Below |
 
 
 | Type | Value | Description |
@@ -204,12 +206,12 @@ an 8-byte header.
 
 #### Index Frame
 
-An index frame payload is an array of uint32 file offsets for the records. The
-first element of the array contains the file offset of the frame containing the
-first entry in the segment and so on.
+An index frame payload is an array of `uint32` file offsets for the 
+correspoinding records. The first element of the array contains the file offset 
+of the frame containing the first entry in the segment and so on.
 
 `Length` is used to indicate the length in bytes of the array (i.e. number of
-entries in the segments is Length/4).
+entries in the segments is `Length/4`).
 
 Index frames are written only when the segment is sealed and a commit frame
 follows to validate the final write.
@@ -224,7 +226,7 @@ bytes appended since the last fsync.
 last fsync. That is, since just after the last commit frame, or just after the
 file header.
 
-There are also 4 bytes of padding to keep alignment. Later we could
+There may also be 4 bytes of padding to keep alignment. Later we could
 use these too.
 
 #### Alignment
@@ -232,7 +234,7 @@ use these too.
 All frame headers are written with 8-byte alignment to ensure they remain in a
 single disk sector. We don't entirely depend on atomic sector writes for
 correctness, but it's a simple way to improve our chances or being able to read
-through the file on a recovery.
+through the file on a recovery with some sectors missing.
 
 We add an implicit 0-7 null bytes after each frame to ensure the next frame
 header is aligned. This padding is _not_ represented in `Length` but it is
@@ -243,8 +245,8 @@ over raw bytes written so always include the padding (zero) bytes.
 Despite alignment we still don't blindly trust the headers we read are valid. A
 CRC mismatch or invalid record format indicate torn writes in the last batch
 written and we always safety check the size of lengths read before allocating
-them - Entry lengths can't be bigger than the `MaxEntrySize` which we default to
-64MiB.
+memory for them - Entry lengths can't be bigger than the `MaxEntrySize` which 
+we default to 64MiB.
 
 ### Sealing
 
@@ -258,7 +260,7 @@ default), we "seal" it. This process involves:
  3. Return the final `IndexStart` to be stored in `wal-meta.db`
 
 Sealed files can have their indexes read directly on open from the IndexStart in
-`wal-meta.db` so records can be looked but in constant time.
+`wal-meta.db` so records can be looked up in constant time.
 
 ## Log Lookup by Index
 
@@ -266,7 +268,7 @@ For an unsealed segment we first lookup the offset in the in-memory index.
 
 For a sealed segment we can discover the index frame location from the metadata
 and then perform a read at the right location in the file to lookup the record's
-offset. Implementations may choose to cache or memory map the index array but we
+offset. Implementations may choose to cache or memory-map the index array but we
 will initially just read the specific entry we need each time and assume the OS
 page cache will make that fast for frequently accessed index areas or in-order
 traversals. We don't have to read the whole index, just the 4 byte entry we care
