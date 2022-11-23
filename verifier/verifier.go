@@ -4,6 +4,7 @@
 package verifier
 
 import (
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -29,6 +30,16 @@ type IsCheckpointFn func(*raft.Log) (bool, error)
 // ReportFn is called synchronously by the verifier so it should not block for
 // long otherwise it may cause the verifier to miss later checkpoints.
 type ReportFn func(VerificationReport)
+
+// ErrRangeMismatch is the error type returned in a VerificationReport where the
+// follower does not have enough logs on disk to fill the checkpoint's range and
+// so is bound to fail. This is a separate type from pure failures to read a log
+// because it's expected this could happen just after truncations or if the
+// interval is to large for the number of logs retained etc. Implementations may
+// choose to detect this and report as a warning rather than a failure as it
+// indicates only an inability to report correctly not an actual error in
+// processing data.
+var ErrRangeMismatch = errors.New("range mismatch")
 
 // ErrChecksumMismatch is the error type returned in a VerificationReport where
 // the log range's checksum didn't match.
@@ -141,6 +152,22 @@ func (s *LogStore) verify(report *VerificationReport) {
 		report.Err = ErrChecksumMismatch(fmt.Sprintf("log verification failed for range %s: "+
 			"in-flight corruption: follower wrote checksum=%08x, leader wrote checksum=%08x",
 			report.Range, report.WrittenSum, report.ExpectedSum))
+		return
+	}
+
+	// Do we actually have enough logs to calculate the checksum? If not indicate
+	// that explicitly as its an expected case rather than a real "error". Note
+	// that we may get a racey false negative here if truncation happens right
+	// between this check and the GetLog call below but there's not much we can do
+	// about that and hopefully is rare enough!
+	first, err := s.s.FirstIndex()
+	if err != nil {
+		report.Err = fmt.Errorf("unable to verify log range %s: %w", report.Range, err)
+		return
+	}
+	if first > report.Range.Start {
+		// We don't have enough logs to calculate this correctly.
+		report.Err = ErrRangeMismatch
 		return
 	}
 

@@ -92,8 +92,9 @@ func TestStore(t *testing.T) {
 				AssertReport("leader", LogRange{1234, 1234 + 5}, "").
 				// Only replicate a subset of the range
 				ReplicateRange("f1", 1236, 1239, 0).
-				// Follower should report and fail because it doesn't have enough logs
-				AssertReport("f1", LogRange{1234, 1234 + 5}, "log not found").
+				// Follower should report with special err type because it doesn't have
+				// enough logs
+				AssertReport("f1", LogRange{1234, 1234 + 5}, "range mismatch").
 				// But next checkpoint around it should be fine
 				AppendN(5).
 				AppendCheckpoint().
