@@ -82,6 +82,12 @@ func main() {
 			}
 		}
 	}
+
+	// Make the results dir if it doesn't exist
+	if err := os.MkdirAll(filepath.Join(o.dir, filepath.Dir(outFileName(o, "blah"))), 0755); err != nil {
+		panic(err)
+	}
+
 	r := &appendRequesterFactory{
 		opts:   o,
 		output: teeOut,
@@ -104,7 +110,7 @@ func outFileName(o opts, suffix string) string {
 	if o.version == "bolt" && o.noFreelistSync {
 		version += "-nfls"
 	}
-	return fmt.Sprintf("bench-result-%s-s%d-n%d-r%d-seg%dm-pre%d-trail%d-tp%s-%s-%s.txt",
+	return fmt.Sprintf("bench-result-%s-s%d-n%d-r%d-seg%dm-pre%d-trail%d-tp%s/%s-%s.txt",
 		o.duration, o.logSize, o.batchSize, o.rate, o.segSize, o.preLoadN,
 		o.truncateTrailingLogs, o.truncatePeriod, version, suffix)
 }

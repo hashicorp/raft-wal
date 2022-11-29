@@ -131,19 +131,12 @@ func (r *appendRequester) Setup() error {
 				return err
 			}
 		}
-		if r.opts.truncatePeriod == 0 {
-			// Now truncate all, but one of those back out. We leave one to be more
-			// realistic since raft always leaves some recent logs. Note r.index is
-			// already at the next index after the one we just wrote so the inclusive
-			// delete range is not one but two before that to leave the one before
-			// intact.
-			fmt.Fprintf(r.output, "Truncating 1 - %d\n", r.index-2)
-			err := r.store.DeleteRange(1, r.index-2)
-			if err != nil {
-				return err
-			}
-		} else {
-			fmt.Fprintf(r.output, "Done preloading, will leave truncate for background process\n")
+
+		// Now truncate back to trailingLogs.
+		fmt.Fprintf(r.output, "Truncating 1 - %d\n", r.index-uint64(r.opts.truncateTrailingLogs))
+		err := r.store.DeleteRange(1, r.index-uint64(r.opts.truncateTrailingLogs))
+		if err != nil {
+			return err
 		}
 		r.dumpStats()
 	}
