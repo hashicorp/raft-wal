@@ -13,6 +13,25 @@ import (
 	"github.com/segmentio/fasthash/fnv1a"
 )
 
+const (
+	// ExtensionMagicPrefix is the prefix we append to log Extensions fields to
+	// disambiguate from other middleware that may use extensions. This value is
+	// carefully constructed to be completely invalid as the beginning of a
+	// protobuf (3) wire protocol message since the other known user of this field
+	// encodes its data that way. If the first byte were 0xa8 this would be a
+	// valid protobuf field encoding for an int field, however currently the 3
+	// least significant bits encode the field type as 7, which is not a valid
+	// type in the current spec. Even if this does change in the future, the
+	// field's tag number encoded here is 123456789 so it's extremely unlikely
+	// that any valid protobuf schema will ever have enough fields or arbitrarily
+	// decide to assign field tags that large (though unrecognized tags would be
+	// ignored on decode). Finally, the value of the field is the varint encoding
+	// of the randomly chosen value 53906 so if type 7 is ever valid in the future
+	// and used as a length-prefixed type, the length decoded would be way longer
+	// than the buffer making it invalid.
+	ExtensionMagicPrefix uint64 = 0xafd1f9d60392a503
+)
+
 // IsCheckpointFn is a function that can decide whether the contents of a raft
 // log's Data represents a checkpoint message. It is called on every append so
 // it must be relatively fast in the common case. If it returns true for a log,

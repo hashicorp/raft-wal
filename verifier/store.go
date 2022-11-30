@@ -5,6 +5,7 @@ package verifier
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"sync/atomic"
@@ -90,18 +91,23 @@ func (s *LogStore) StoreLog(log *raft.Log) error {
 }
 
 func encodeCheckpointMeta(startIdx, sum uint64) []byte {
-	var buf [16]byte
-	binary.LittleEndian.PutUint64(buf[0:8], startIdx)
-	binary.LittleEndian.PutUint64(buf[8:16], sum)
+	var buf [24]byte
+	binary.LittleEndian.PutUint64(buf[0:8], ExtensionMagicPrefix)
+	binary.LittleEndian.PutUint64(buf[8:16], startIdx)
+	binary.LittleEndian.PutUint64(buf[16:24], sum)
 	return buf[:]
 }
 
 func decodeCheckpointMeta(bs []byte) (startIdx, sum uint64, err error) {
-	if len(bs) < 16 {
+	if len(bs) < 24 {
 		return 0, 0, io.ErrShortBuffer
 	}
-	startIdx = binary.LittleEndian.Uint64(bs[0:8])
-	sum = binary.LittleEndian.Uint64(bs[8:16])
+	magic := binary.LittleEndian.Uint64(bs[0:8])
+	if magic != ExtensionMagicPrefix {
+		return 0, 0, errors.New("invalid extension data")
+	}
+	startIdx = binary.LittleEndian.Uint64(bs[8:16])
+	sum = binary.LittleEndian.Uint64(bs[16:24])
 	return startIdx, sum, nil
 }
 
