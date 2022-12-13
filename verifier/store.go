@@ -12,6 +12,7 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
+	"github.com/hashicorp/raft-wal/metrics"
 )
 
 // LogStore is a raft.LogStore that acts as middleware around an underlying
@@ -45,7 +46,7 @@ type LogStore struct {
 
 	s raft.LogStore
 
-	metrics *Metrics
+	metrics metrics.Collector
 	log     hclog.Logger
 
 	verifyCh chan VerificationReport
@@ -58,10 +59,10 @@ type LogStore struct {
 // set on the returned store _before_ it is passed to Raft, or may be left as
 // nil to bypass verification. Close must be called when the log store is no
 // longer useful to cleanup background verification.
-func NewLogStore(store raft.LogStore, checkpointFn IsCheckpointFn, reportFn ReportFn) *LogStore {
+func NewLogStore(store raft.LogStore, checkpointFn IsCheckpointFn, reportFn ReportFn, mc metrics.Collector) *LogStore {
 	c := &LogStore{
 		s:            store,
-		metrics:      &Metrics{},
+		metrics:      mc,
 		verifyCh:     make(chan VerificationReport, 1),
 		checkpointFn: checkpointFn,
 		reportFn:     reportFn,
@@ -198,7 +199,7 @@ func (s *LogStore) StoreLogs(logs []*raft.Log) error {
 	atomic.StoreUint64(&s.checksum, cs)
 	atomic.StoreUint64(&s.sumStartIdx, startIdx)
 	if len(triggeredReports) > 0 {
-		atomic.StoreUint64(&s.metrics.CheckpointsWritten, uint64(len(triggeredReports)))
+		s.metrics.IncrementCounter("checkpoints_written", uint64(len(triggeredReports)))
 	}
 
 	for _, r := range triggeredReports {
@@ -215,7 +216,7 @@ func (s *LogStore) triggerVerify(r VerificationReport) {
 	select {
 	case s.verifyCh <- r:
 	default:
-		atomic.AddUint64(&s.metrics.DroppedReports, 1)
+		s.metrics.IncrementCounter("dropped_reports", 1)
 	}
 }
 
