@@ -6,7 +6,6 @@ package verifier
 import (
 	"errors"
 	"fmt"
-	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/raft"
@@ -155,7 +154,7 @@ func (s *LogStore) runVerifier() {
 		// Whatever state report ended up in, deliver it!
 		report.Elapsed = time.Since(st)
 		s.reportFn(report)
-		atomic.AddUint64(&s.metrics.RangesVerified, 1)
+		s.metrics.IncrementCounter("ranges_verified", 1)
 	}
 }
 
@@ -167,7 +166,7 @@ func (s *LogStore) verify(report *VerificationReport) {
 	// leader in this range then there's not much point verifying that we read it
 	// back OK.
 	if report.WrittenSum != 0 && report.WrittenSum != report.ExpectedSum {
-		atomic.AddUint64(&s.metrics.WriteChecksumFailures, 1)
+		s.metrics.IncrementCounter("write_checksum_failures", 1)
 		report.Err = ErrChecksumMismatch(fmt.Sprintf("log verification failed for range %s: "+
 			"in-flight corruption: follower wrote checksum=%08x, leader wrote checksum=%08x",
 			report.Range, report.WrittenSum, report.ExpectedSum))
@@ -202,7 +201,7 @@ func (s *LogStore) verify(report *VerificationReport) {
 	report.ReadSum = sum
 
 	if report.ReadSum != report.ExpectedSum {
-		atomic.AddUint64(&s.metrics.ReadChecksumFailures, 1)
+		s.metrics.IncrementCounter("read_checksum_failures", 1)
 		report.Err = ErrChecksumMismatch(fmt.Sprintf("log verification failed for range %s: "+
 			"storage corruption: node read checksum=%08x, leader wrote checksum=%08x",
 			report.Range, report.ReadSum, report.ExpectedSum))

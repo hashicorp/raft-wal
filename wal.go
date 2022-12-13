@@ -18,6 +18,7 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
+	"github.com/hashicorp/raft-wal/metrics"
 	"github.com/hashicorp/raft-wal/types"
 )
 
@@ -41,12 +42,9 @@ type WAL struct {
 	codec       Codec
 	sf          types.SegmentFiler
 	metaDB      types.MetaStore
+	metrics     metrics.Collector
 	log         hclog.Logger
 	segmentSize int
-
-	// metrics is allocated once on creation then it's elements are accessed
-	// atomically after that.
-	metrics []uint64
 
 	// s is the current state of the WAL files. It is an immutable snapshot that
 	// can be accessed without a lock when reading. We only support a single
@@ -90,7 +88,6 @@ type walOpt func(*WAL)
 func Open(dir string, opts ...walOpt) (*WAL, error) {
 	w := &WAL{
 		dir:           dir,
-		metrics:       make([]uint64, numMetrics),
 		triggerRotate: make(chan uint64, 1),
 	}
 	// Apply options
@@ -333,13 +330,13 @@ func (w *WAL) GetLog(index uint64, log *raft.Log) error {
 	}
 	s, release := w.acquireState()
 	defer release()
-	w.incr("log_entries_read", 1)
+	w.metrics.IncrementCounter("log_entries_read", 1)
 
 	raw, err := s.getLog(index)
 	if err != nil {
 		return err
 	}
-	w.incr("log_entry_bytes_read", uint64(len(raw.Bs)))
+	w.metrics.IncrementCounter("log_entry_bytes_read", uint64(len(raw.Bs)))
 	defer raw.Close()
 
 	// Decode the log
@@ -428,9 +425,9 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 	if err := s.tail.Append(encoded); err != nil {
 		return err
 	}
-	w.incr("log_appends", 1)
-	w.incr("log_entries_written", uint64(len(encoded)))
-	w.incr("log_entry_bytes_written", nBytes)
+	w.metrics.IncrementCounter("log_appends", 1)
+	w.metrics.IncrementCounter("log_entries_written", uint64(len(encoded)))
+	w.metrics.IncrementCounter("log_entry_bytes_written", nBytes)
 
 	// Check if we need to roll logs
 	sealed, indexStart, err := s.tail.Sealed()
@@ -508,7 +505,7 @@ func (w *WAL) Set(key []byte, val []byte) error {
 	if err := w.checkClosed(); err != nil {
 		return err
 	}
-	w.incr("stable_sets", 1)
+	w.metrics.IncrementCounter("stable_sets", 1)
 	return w.metaDB.SetStable(key, val)
 }
 
@@ -517,7 +514,7 @@ func (w *WAL) Get(key []byte) ([]byte, error) {
 	if err := w.checkClosed(); err != nil {
 		return nil, err
 	}
-	w.incr("stable_gets", 1)
+	w.metrics.IncrementCounter("stable_gets", 1)
 	return w.metaDB.GetStable(key)
 }
 
@@ -605,7 +602,7 @@ func (w *WAL) rotateSegmentLocked(indexStart uint64) error {
 		tail.SealTime = time.Now()
 		tail.MaxIndex = newState.tail.LastIndex()
 		tail.IndexStart = indexStart
-		w.setGauge("last_segment_age_seconds", uint64(tail.SealTime.Sub(tail.CreateTime).Seconds()))
+		w.metrics.SetGauge("last_segment_age_seconds", uint64(tail.SealTime.Sub(tail.CreateTime).Seconds()))
 
 		// Update the old tail with the seal time etc.
 		newState.segments = newState.segments.Set(tail.BaseIndex, *tail)
@@ -613,7 +610,7 @@ func (w *WAL) rotateSegmentLocked(indexStart uint64) error {
 		post, err := w.createNextSegment(newState)
 		return nil, post, err
 	}
-	w.incr("segment_rotations", 1)
+	w.metrics.IncrementCounter("segment_rotations", 1)
 	return w.mutateStateLocked(txn)
 }
 
@@ -715,7 +712,7 @@ func (w *WAL) truncateHeadLocked(newMin uint64) error {
 			}
 			postCommit = pc
 		}
-		w.incr("head_truncations", nTruncated)
+		w.metrics.IncrementCounter("head_truncations", nTruncated)
 
 		// Return a finalizer that will be called when all readers are done with the
 		// segments in the current state to close and delete old segments.
@@ -781,7 +778,7 @@ func (w *WAL) truncateTailLocked(newMax uint64) error {
 		if err != nil {
 			return nil, nil, err
 		}
-		w.incr("tail_truncations", nTruncated)
+		w.metrics.IncrementCounter("tail_truncations", nTruncated)
 
 		// Return a finalizer that will be called when all readers are done with the
 		// segments in the current state to close and delete old segments.

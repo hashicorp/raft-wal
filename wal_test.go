@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/raft"
+	"github.com/hashicorp/raft-wal/metrics"
 	"github.com/stretchr/testify/require"
 )
 
@@ -599,7 +600,13 @@ func TestDeleteRange(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			ts, w, err := testOpenWAL(t, tc.tsOpts, tc.walOpts, false)
+			opts := tc.walOpts
+
+			// add our own metrics counter
+			m := metrics.NewAtomicCollector(MetricDefinitions)
+			opts = append(opts, WithMetricsCollector(m))
+
+			ts, w, err := testOpenWAL(t, tc.tsOpts, opts, false)
 			require.NoError(t, err)
 
 			err = w.DeleteRange(tc.deleteMin, tc.deleteMax)
@@ -659,9 +666,9 @@ func TestDeleteRange(t *testing.T) {
 			validateLogEntry(t, &log)
 
 			// Verify the metrics recorded what we expected!
-			metrics := w.Metrics()
-			require.Equal(t, int(tc.expectNTailTruncations), int(metrics["tail_truncations"]))
-			require.Equal(t, int(tc.expectNHeadTruncations), int(metrics["head_truncations"]))
+			metrics := m.Summary()
+			require.Equal(t, int(tc.expectNTailTruncations), int(metrics.Counters["tail_truncations"]))
+			require.Equal(t, int(tc.expectNHeadTruncations), int(metrics.Counters["head_truncations"]))
 		})
 	}
 }

@@ -7,11 +7,11 @@ import (
 	"bytes"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/hashicorp/raft"
+	"github.com/hashicorp/raft-wal/metrics"
 	"github.com/stretchr/testify/require"
 )
 
@@ -54,10 +54,10 @@ func TestStore(t *testing.T) {
 				ReplicateTo("f1", 1239, 1235).
 				// Follower should report and detect in-flight corruption
 				AssertReport("f1", LogRange{1234, 1234 + 5}, "in-flight corruption").
-				AssertMetrics("f1", func(t *testing.T, m *Metrics) {
-					require.Equal(t, 1, int(atomic.LoadUint64(&m.CheckpointsWritten)))
-					require.Equal(t, 1, int(atomic.LoadUint64(&m.WriteChecksumFailures)))
-					require.Equal(t, 0, int(atomic.LoadUint64(&m.ReadChecksumFailures)))
+				AssertMetrics("f1", func(t *testing.T, s metrics.Summary) {
+					require.Equal(t, 1, int(s.Counters["checkpoints_written"]))
+					require.Equal(t, 1, int(s.Counters["write_checksum_failures"]))
+					require.Equal(t, 0, int(s.Counters["read_checksum_failures"]))
 				}).
 				Steps(),
 		},
@@ -76,10 +76,10 @@ func TestStore(t *testing.T) {
 				ReplicateTo("f1", 1239, 0).
 				// Follower should report and detect storage corruption
 				AssertReport("f1", LogRange{1234, 1234 + 5}, "storage corruption").
-				AssertMetrics("f1", func(t *testing.T, m *Metrics) {
-					require.Equal(t, 1, int(atomic.LoadUint64(&m.CheckpointsWritten)))
-					require.Equal(t, 0, int(atomic.LoadUint64(&m.WriteChecksumFailures)))
-					require.Equal(t, 1, int(atomic.LoadUint64(&m.ReadChecksumFailures)))
+				AssertMetrics("f1", func(t *testing.T, s metrics.Summary) {
+					require.Equal(t, 1, int(s.Counters["checkpoints_written"]))
+					require.Equal(t, 0, int(s.Counters["write_checksum_failures"]))
+					require.Equal(t, 1, int(s.Counters["read_checksum_failures"]))
 				}).
 				Steps(),
 		},
@@ -131,9 +131,9 @@ func TestStore(t *testing.T) {
 				AssertReport("leader", LogRange{18, 24}, "", func(t *testing.T, r *VerificationReport) {
 					require.Equal(t, &LogRange{12, 18}, r.SkippedRange)
 				}).
-				AssertMetrics("leader", func(t *testing.T, m *Metrics) {
-					require.Equal(t, 1, int(atomic.LoadUint64(&m.DroppedReports)))
-					require.Equal(t, 3, int(atomic.LoadUint64(&m.RangesVerified)))
+				AssertMetrics("leader", func(t *testing.T, s metrics.Summary) {
+					require.Equal(t, 1, int(s.Counters["dropped_reports"]))
+					require.Equal(t, 3, int(s.Counters["ranges_verified"]))
 				}).
 				Steps(),
 		},
@@ -188,8 +188,8 @@ func TestStore(t *testing.T) {
 					peers.unblockReportFn(step.targetNode)
 
 				case step.assertMetrics != nil:
-					ls := peers.logStore(step.targetNode)
-					step.assertMetrics(t, ls.metrics)
+					ms := peers.metrics(step.targetNode)
+					step.assertMetrics(t, ms)
 
 				default:
 					t.Fatalf("invalid testStep: %#v", step)
@@ -205,6 +205,7 @@ type peerSet struct {
 	tss    map[string]*testStore
 	chs    map[string]chan VerificationReport
 	blocks map[string]sync.Locker
+	mcs    map[string]*metrics.AtomicCollector
 }
 
 func newPeerSet() *peerSet {
@@ -213,6 +214,7 @@ func newPeerSet() *peerSet {
 		tss:    make(map[string]*testStore),
 		chs:    make(map[string]chan VerificationReport),
 		blocks: make(map[string]sync.Locker),
+		mcs:    make(map[string]*metrics.AtomicCollector),
 	}
 }
 
@@ -222,6 +224,7 @@ func (s *peerSet) Close() error {
 		delete(s.lss, node)
 		delete(s.tss, node)
 		delete(s.chs, node)
+		delete(s.mcs, node)
 		// Don't close chans as it causes panics.
 	}
 	return nil
@@ -231,7 +234,7 @@ func cpFn(l *raft.Log) (bool, error) {
 	return bytes.Equal(l.Data, []byte("CHECKPOINT")), nil
 }
 
-func (s *peerSet) init(node string) (*LogStore, *testStore, chan VerificationReport) {
+func (s *peerSet) init(node string) (*LogStore, *testStore, chan VerificationReport, *metrics.AtomicCollector) {
 	ts := &testStore{}
 
 	ch := make(chan VerificationReport, 20)
@@ -243,19 +246,21 @@ func (s *peerSet) init(node string) (*LogStore, *testStore, chan VerificationRep
 		ch <- vr
 	}
 
-	ls := NewLogStore(ts, cpFn, reportFn)
+	metrics := metrics.NewAtomicCollector(MetricDefinitions)
+	ls := NewLogStore(ts, cpFn, reportFn, metrics)
 
 	s.lss[node] = ls
 	s.tss[node] = ts
 	s.chs[node] = ch
+	s.mcs[node] = metrics
 	s.blocks[node] = &block
-	return ls, ts, ch
+	return ls, ts, ch, metrics
 }
 
 func (s *peerSet) logStore(node string) *LogStore {
 	ls, ok := s.lss[node]
 	if !ok {
-		ls, _, _ = s.init(node)
+		ls, _, _, _ = s.init(node)
 	}
 	return ls
 }
@@ -263,7 +268,7 @@ func (s *peerSet) logStore(node string) *LogStore {
 func (s *peerSet) testStore(node string) *testStore {
 	ts, ok := s.tss[node]
 	if !ok {
-		_, ts, _ = s.init(node)
+		_, ts, _, _ = s.init(node)
 	}
 	return ts
 }
@@ -271,9 +276,17 @@ func (s *peerSet) testStore(node string) *testStore {
 func (s *peerSet) reportCh(node string) chan VerificationReport {
 	ch, ok := s.chs[node]
 	if !ok {
-		_, _, ch = s.init(node)
+		_, _, ch, _ = s.init(node)
 	}
 	return ch
+}
+
+func (s *peerSet) metrics(node string) metrics.Summary {
+	mc, ok := s.mcs[node]
+	if !ok {
+		_, _, _, mc = s.init(node)
+	}
+	return mc.Summary()
 }
 
 func (s *peerSet) blockReportFn(node string) {
@@ -364,7 +377,7 @@ type testStep struct {
 	blockReporting   bool
 	unblockReporting bool
 
-	assertMetrics func(t *testing.T, m *Metrics)
+	assertMetrics func(t *testing.T, s metrics.Summary)
 }
 
 func (s testStep) String() string {
@@ -520,7 +533,7 @@ func (b *testBuilder) UnblockReporting(node string) *testBuilder {
 	return b
 }
 
-func (b *testBuilder) AssertMetrics(node string, fn func(t *testing.T, m *Metrics)) *testBuilder {
+func (b *testBuilder) AssertMetrics(node string, fn func(t *testing.T, m metrics.Summary)) *testBuilder {
 	step := testStep{
 		targetNode:    node,
 		assertMetrics: fn,
