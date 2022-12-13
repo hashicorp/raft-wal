@@ -303,7 +303,7 @@ func assertReportDelivered(t *testing.T, ch <-chan VerificationReport) *Verifica
 	case r := <-ch:
 		return &r
 
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatalf("didn't get report after a second!")
 	}
 	return nil
@@ -412,7 +412,7 @@ func (s testStep) String() string {
 		return fmt.Sprintf("blockReporting(%s)", s.targetNode)
 
 	case s.unblockReporting:
-		return fmt.Sprintf("blockReporting(%s)", s.targetNode)
+		return fmt.Sprintf("unblockReporting(%s)", s.targetNode)
 
 	case s.assertMetrics != nil:
 		return fmt.Sprintf("assertMetrics(%s)", s.targetNode)
