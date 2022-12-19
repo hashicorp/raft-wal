@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package metrics
 
 // Collector provides a simple abstraction for counter type metrics that
