@@ -109,6 +109,17 @@ func TestStore(t *testing.T) {
 				AssertCanRead("leader", LogRange{1, 5}).
 				BlockReporting("leader").
 				AppendCheckpoint(). // CP 1 @idx=6
+				// Wait for that checkpoint to trigger the report fn and that report fn
+				// to block. This is important to prevent flakes. Before adding this the
+				// test would pass fine locally on multiple hardware threads but fail
+				// with GOMAXPROCS=1 because the current os thread would continue and
+				// deliver more checkpoints before the background runVerifier goroutine
+				// that is reading them from the verifyCh actually got scheduled,
+				// breaking the assumptions below that the second checkpoint would be
+				// buffered (since the first still was). This step ensures that we wait
+				// until the runVerifier goroutine is actually processing the first one
+				// (and so the buffer is free for the next) before sending that.
+				WaitForReportFn("leader").
 				// Deliver another three checkpoints. The first will be already done and
 				// blocked on delivery so we'll get it eventually. The second will be
 				// buffered on write ready for the first to finish. So will eventually
@@ -187,6 +198,9 @@ func TestStore(t *testing.T) {
 				case step.unblockReporting:
 					peers.unblockReportFn(step.targetNode)
 
+				case step.waitForReportFn:
+					peers.waitForReportFn(step.targetNode)
+
 				case step.assertMetrics != nil:
 					ms := peers.metrics(step.targetNode)
 					step.assertMetrics(t, ms)
@@ -200,11 +214,73 @@ func TestStore(t *testing.T) {
 	}
 }
 
+type reportBlocker struct {
+	sync.Mutex
+
+	blocked      bool
+	waitingSig   sync.Cond
+	unblockedSig sync.Cond
+}
+
+func newReportBlocker() *reportBlocker {
+	b := &reportBlocker{}
+	b.waitingSig.L = &b.Mutex
+	b.unblockedSig.L = &b.Mutex
+	return b
+}
+
+func (b *reportBlocker) WaitBlock() {
+	b.Lock()
+	defer b.Unlock()
+
+	first := true
+	for b.blocked {
+		if first {
+			// We need to wait. First signal that we are waiting so the test can be
+			// deterministic about what state the reporting goroutine is before moving
+			// on.
+			b.waitingSig.Broadcast()
+			first = false
+		}
+
+		// Now wait for unblock (and re-check!)
+		b.unblockedSig.Wait()
+	}
+}
+
+func (b *reportBlocker) WaitForNextReportBlocked() bool {
+	b.Lock()
+	defer b.Unlock()
+
+	if !b.blocked {
+		// We're not blocked so the reportFn is not going to wait
+		return false
+	}
+
+	b.waitingSig.Wait()
+	return true
+}
+
+func (b *reportBlocker) Block() {
+	b.Lock()
+	defer b.Unlock()
+
+	b.blocked = true
+}
+
+func (b *reportBlocker) Unblock() {
+	b.Lock()
+	defer b.Unlock()
+
+	b.blocked = false
+	b.unblockedSig.Broadcast()
+}
+
 type peerSet struct {
 	lss    map[string]*LogStore
 	tss    map[string]*testStore
 	chs    map[string]chan VerificationReport
-	blocks map[string]sync.Locker
+	blocks map[string]*reportBlocker
 	mcs    map[string]*metrics.AtomicCollector
 }
 
@@ -213,7 +289,7 @@ func newPeerSet() *peerSet {
 		lss:    make(map[string]*LogStore),
 		tss:    make(map[string]*testStore),
 		chs:    make(map[string]chan VerificationReport),
-		blocks: make(map[string]sync.Locker),
+		blocks: make(map[string]*reportBlocker),
 		mcs:    make(map[string]*metrics.AtomicCollector),
 	}
 }
@@ -238,11 +314,9 @@ func (s *peerSet) init(node string) (*LogStore, *testStore, chan VerificationRep
 	ts := &testStore{}
 
 	ch := make(chan VerificationReport, 20)
-	var block sync.Mutex
+	block := newReportBlocker()
 	reportFn := func(vr VerificationReport) {
-		// Wait if blocked
-		block.Lock()
-		block.Unlock()
+		block.WaitBlock()
 		ch <- vr
 	}
 
@@ -253,7 +327,7 @@ func (s *peerSet) init(node string) (*LogStore, *testStore, chan VerificationRep
 	s.tss[node] = ts
 	s.chs[node] = ch
 	s.mcs[node] = metrics
-	s.blocks[node] = &block
+	s.blocks[node] = block
 	return ls, ts, ch, metrics
 }
 
@@ -289,12 +363,16 @@ func (s *peerSet) metrics(node string) metrics.Summary {
 	return mc.Summary()
 }
 
+func (s *peerSet) waitForReportFn(node string) bool {
+	return s.blocks[node].WaitForNextReportBlocked()
+}
+
 func (s *peerSet) blockReportFn(node string) {
-	s.blocks[node].Lock()
+	s.blocks[node].Block()
 }
 
 func (s *peerSet) unblockReportFn(node string) {
-	s.blocks[node].Unlock()
+	s.blocks[node].Unblock()
 }
 
 func assertReportDelivered(t *testing.T, ch <-chan VerificationReport) *VerificationReport {
@@ -304,7 +382,7 @@ func assertReportDelivered(t *testing.T, ch <-chan VerificationReport) *Verifica
 		return &r
 
 	case <-time.After(5 * time.Second):
-		t.Fatalf("didn't get report after a second!")
+		t.Fatalf("didn't get report after 5 seconds!")
 	}
 	return nil
 }
@@ -376,6 +454,7 @@ type testStep struct {
 
 	blockReporting   bool
 	unblockReporting bool
+	waitForReportFn  bool
 
 	assertMetrics func(t *testing.T, s metrics.Summary)
 }
@@ -413,6 +492,9 @@ func (s testStep) String() string {
 
 	case s.unblockReporting:
 		return fmt.Sprintf("unblockReporting(%s)", s.targetNode)
+
+	case s.waitForReportFn:
+		return fmt.Sprintf("waitForReportFn(%s)", s.targetNode)
 
 	case s.assertMetrics != nil:
 		return fmt.Sprintf("assertMetrics(%s)", s.targetNode)
@@ -528,6 +610,15 @@ func (b *testBuilder) UnblockReporting(node string) *testBuilder {
 	step := testStep{
 		targetNode:       node,
 		unblockReporting: true,
+	}
+	b.steps = append(b.steps, step)
+	return b
+}
+
+func (b *testBuilder) WaitForReportFn(node string) *testBuilder {
+	step := testStep{
+		targetNode:      node,
+		waitForReportFn: true,
 	}
 	b.steps = append(b.steps, step)
 	return b
