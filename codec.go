@@ -37,7 +37,8 @@ type Codec interface {
 
 	// Decode a log from the passed byte slice into the log entry pointed to. This
 	// allows the caller to manage allocation and re-use of the bytes and log
-	// entry.
+	// entry. The resulting raft.Log MUST NOT reference data in the input byte
+	// slice since the input byte slice may be re-used for
 	Decode([]byte, *raft.Log) error
 }
 
@@ -148,7 +149,8 @@ func (d *decoder) bytes() []byte {
 		d.err = io.ErrShortBuffer
 		return nil
 	}
-	bs := d.buf[:n]
+	bs := make([]byte, n)
+	copy(bs, d.buf[:n])
 	d.buf = d.buf[n:]
 	return bs
 }

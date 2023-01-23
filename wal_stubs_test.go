@@ -513,8 +513,21 @@ func (s *testSegment) GetLog(idx uint64) (*types.PooledBuffer, error) {
 	if !ok {
 		return nil, ErrNotFound
 	}
+
+	// We make a pooled buffer with it's own copy of the log which we then
+	// invalidate when it's Closed to make sure that any test code that reads data
+	// from a buffer that was freed fails to read what it expected. This ensures
+	// our logic about returning slices to users that we might re-use is correct.
+	buf := make([]byte, len(log.Data))
+	copy(buf, log.Data)
 	pb := &types.PooledBuffer{
-		Bs: log.Data,
+		Bs: buf,
+		CloseFn: func() {
+			closed := []byte{'c', 'l', 'o', 's', 'e', 'd', ' ', 'b', 'u', 'f', 'f', 'e', 'r', '!'}
+			for i := 0; i < len(buf); i++ {
+				buf[i] = closed[i%len(closed)]
+			}
+		},
 	}
 	return pb, nil
 }
