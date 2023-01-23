@@ -59,3 +59,36 @@ func TestBinaryCodecFuzz(t *testing.T) {
 		require.Equal(t, log, log2)
 	}
 }
+
+func TestBinaryCodecCopysOnDecode(t *testing.T) {
+	var in, out raft.Log
+
+	in.Index = 1234
+	in.Term = 2
+	in.Type = raft.LogCommand
+	in.Data = []byte("foo")
+	in.Extensions = []byte("ext")
+
+	c := BinaryCodec{}
+	var buf bytes.Buffer
+	require.NoError(t, c.Encode(&in, &buf))
+
+	rawBytes := buf.Bytes()
+
+	require.NoError(t, c.Decode(rawBytes, &out))
+
+	// Make sure the decoded data is the same
+	require.Equal(t, string(out.Data), "foo")
+	require.Equal(t, string(out.Extensions), "ext")
+
+	// Intentionally mangle the buffer contents
+	for i := 0; i < len(rawBytes); i++ {
+		rawBytes[i] = 'x'
+	}
+
+	// Make sure the decoded data is still the same (i.e. didn't refer to the
+	// underlying bytes)
+	require.Equal(t, string(out.Data), "foo")
+	require.Equal(t, string(out.Extensions), "ext")
+
+}

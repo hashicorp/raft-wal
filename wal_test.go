@@ -852,6 +852,9 @@ func TestConcurrentReadersAndWriter(t *testing.T) {
 				if log.Index != idx {
 					panic(fmt.Errorf("wrong %s log want=%d got=%d", name, idx, log.Index))
 				}
+				if string(log.Data) != fmt.Sprintf("Log entry %d", log.Index) {
+					panic(fmt.Errorf("wrong data in log %d: %s", log.Index, log.Data))
+				}
 				return 1
 			}
 
