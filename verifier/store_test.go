@@ -5,6 +5,8 @@ package verifier
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -199,7 +201,9 @@ func TestStore(t *testing.T) {
 					peers.unblockReportFn(step.targetNode)
 
 				case step.waitForReportFn:
-					peers.waitForReportFn(step.targetNode)
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					require.NoError(t, peers.waitForReportFn(ctx, step.targetNode))
+					cancel()
 
 				case step.assertMetrics != nil:
 					ms := peers.metrics(step.targetNode)
@@ -217,7 +221,10 @@ func TestStore(t *testing.T) {
 type reportBlocker struct {
 	sync.Mutex
 
-	blocked      bool
+	blocked bool
+	waiting bool
+	waitErr error
+
 	waitingSig   sync.Cond
 	unblockedSig sync.Cond
 }
@@ -234,6 +241,8 @@ func (b *reportBlocker) WaitBlock() {
 	defer b.Unlock()
 
 	first := true
+	b.waiting = true
+
 	for b.blocked {
 		if first {
 			// We need to wait. First signal that we are waiting so the test can be
@@ -246,19 +255,40 @@ func (b *reportBlocker) WaitBlock() {
 		// Now wait for unblock (and re-check!)
 		b.unblockedSig.Wait()
 	}
+
+	b.waiting = false
 }
 
-func (b *reportBlocker) WaitForNextReportBlocked() bool {
+func (b *reportBlocker) WaitForNextReportBlocked(ctx context.Context) error {
 	b.Lock()
 	defer b.Unlock()
 
 	if !b.blocked {
 		// We're not blocked so the reportFn is not going to wait
-		return false
+		return errors.New("reports are not blocked")
 	}
 
+	if b.waitErr != nil {
+		return b.waitErr
+	}
+
+	if b.waiting {
+		// Report fn is already waiting so it already fired the waitingSig
+		return nil
+	}
+
+	// Unblock the waiter if context is cancelled
+	go func() {
+		<-ctx.Done()
+		b.Lock()
+		defer b.Unlock()
+
+		b.waitErr = ctx.Err()
+		b.waitingSig.Broadcast()
+	}()
+
 	b.waitingSig.Wait()
-	return true
+	return b.waitErr
 }
 
 func (b *reportBlocker) Block() {
@@ -363,8 +393,8 @@ func (s *peerSet) metrics(node string) metrics.Summary {
 	return mc.Summary()
 }
 
-func (s *peerSet) waitForReportFn(node string) bool {
-	return s.blocks[node].WaitForNextReportBlocked()
+func (s *peerSet) waitForReportFn(ctx context.Context, node string) error {
+	return s.blocks[node].WaitForNextReportBlocked(ctx)
 }
 
 func (s *peerSet) blockReportFn(node string) {
