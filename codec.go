@@ -38,7 +38,7 @@ type Codec interface {
 	// Decode a log from the passed byte slice into the log entry pointed to. This
 	// allows the caller to manage allocation and re-use of the bytes and log
 	// entry. The resulting raft.Log MUST NOT reference data in the input byte
-	// slice since the input byte slice may be re-used for
+	// slice since the input byte slice may be returned to a pool and re-used.
 	Decode([]byte, *raft.Log) error
 }
 
