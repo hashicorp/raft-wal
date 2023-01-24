@@ -37,6 +37,21 @@ func TestStore(t *testing.T) {
 				Steps(),
 		},
 		{
+			name: "first index configuration is ignored",
+			steps: newTestSteps(1).
+				BootstrapNodes("leader", "f1").
+				AppendN(5).
+				AssertCanRead("leader", LogRange{1, 7}).
+				AppendCheckpoint().
+				AssertReport("leader", LogRange{1, 7}, "", func(t *testing.T, r *VerificationReport) {
+					require.Nil(t, r.SkippedRange)
+				}).
+				ReplicateTo("f1", 7, 0).
+				// Follower should report and match leader
+				AssertReport("f1", LogRange{1, 7}, "").
+				Steps(),
+		},
+		{
 			name: "leader WAL corruption",
 			steps: newTestSteps(1234).
 				AppendN(5).
@@ -166,6 +181,27 @@ func TestStore(t *testing.T) {
 					// Append batch to leader's store
 					ls := peers.logStore("leader")
 					require.NoError(t, ls.StoreLogs(step.appendBatch))
+
+				case len(step.bootstrapNodes) > 0:
+					// When we bootstrap we write a new configuration into log index 1
+					// This actually happens independently on all servers in Raft and so
+					// the entry itself may not be byte-for-byte identical (although it
+					// should be logically identical). For example in Consul this comes
+					// from Serf gossip discovery and so the list of servers might be
+					// different on each server. That means validating the first log entry
+					// is likely to fail since it's legitimately different on each server.
+					// To simulate this, write a different entry to each server as
+					// "config".
+					for _, n := range step.bootstrapNodes {
+						// create the peer
+						ls := peers.logStore(n)
+						cfg := raft.Log{
+							Index: 1,
+							Type:  raft.LogConfiguration,
+							Data:  []byte(fmt.Sprintf("config for %s", n)),
+						}
+						require.NoError(t, ls.StoreLog(&cfg))
+					}
 
 				case step.replicateMax != 0:
 					leader := peers.logStore("leader")
@@ -423,7 +459,7 @@ func assertCanRead(t *testing.T, s raft.LogStore, start, end uint64) {
 	for idx := start; idx < end; idx++ {
 		require.NoError(t, s.GetLog(idx, &log), "failed reading idx=%d", idx)
 		require.Equal(t, int(idx), int(log.Index), "failed reading idx=%d, got idx=%d", idx, log.Index)
-		if !bytes.Equal(log.Data, []byte("CHECKPOINT")) {
+		if !bytes.Equal(log.Data, []byte("CHECKPOINT")) && log.Type != raft.LogConfiguration {
 			require.Equal(t, fmt.Sprintf("LOG(%d)", idx), string(log.Data),
 				"failed reading idx=%d", idx)
 		}
@@ -465,8 +501,9 @@ type testBuilder struct {
 }
 
 type testStep struct {
-	appendBatch []*raft.Log
-	checkPoint  bool
+	appendBatch    []*raft.Log
+	bootstrapNodes []string
+	checkPoint     bool
 
 	targetNode string
 
@@ -555,6 +592,18 @@ func (b *testBuilder) AppendN(n int) *testBuilder {
 			Data:  []byte(fmt.Sprintf("LOG(%d)", b.nextIndex)),
 		})
 		b.nextIndex++
+	}
+	b.steps = append(b.steps, step)
+	return b
+}
+
+func (b *testBuilder) BootstrapNodes(nodes ...string) *testBuilder {
+	step := testStep{}
+	// Bootstrap config must be index 1
+	step.bootstrapNodes = nodes
+	b.nextIndex = 2
+	for _, n := range nodes {
+		b.peers[n] = 1
 	}
 	b.steps = append(b.steps, step)
 	return b
