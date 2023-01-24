@@ -210,6 +210,13 @@ func (s *LogStore) verify(report *VerificationReport) {
 }
 
 func checksumLog(sum uint64, log *raft.Log) uint64 {
+	// Special case for bootstrap config entries (index 1, type configuration)
+	// since these are not replicated by raft and so may not be byte-for-byte
+	// identical as long as they are logical the same on all peers. So just treat
+	// them all as identical to avoid false-positives on startup.
+	if log.Index == 1 && log.Type == raft.LogConfiguration {
+		return 0
+	}
 	sum = fnv1a.AddUint64(sum, log.Index)
 	sum = fnv1a.AddUint64(sum, log.Term)
 	sum = fnv1a.AddUint64(sum, uint64(log.Type))
