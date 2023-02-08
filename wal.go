@@ -40,6 +40,7 @@ type WAL struct {
 
 	dir         string
 	codec       Codec
+	stableCodec StableCodec
 	sf          types.SegmentFiler
 	metaDB      types.MetaStore
 	metrics     metrics.Collector
@@ -99,7 +100,7 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 	}
 
 	// Load or create metaDB
-	persisted, err := w.metaDB.Load(w.dir)
+	persisted, err := w.metaDB.Load(w.dir, w.stableCodec.ID())
 	if err != nil {
 		return nil, err
 	}
@@ -506,7 +507,15 @@ func (w *WAL) Set(key []byte, val []byte) error {
 		return err
 	}
 	w.metrics.IncrementCounter("stable_sets", 1)
-	return w.metaDB.SetStable(key, val)
+	encKey, err := w.stableCodec.StableEncode(key)
+	if err != nil {
+		return err
+	}
+	encVal, err := w.stableCodec.StableEncode(val)
+	if err != nil {
+		return err
+	}
+	return w.metaDB.SetStable(encKey, encVal)
 }
 
 // Get implements raft.StableStore
@@ -515,7 +524,23 @@ func (w *WAL) Get(key []byte) ([]byte, error) {
 		return nil, err
 	}
 	w.metrics.IncrementCounter("stable_gets", 1)
-	return w.metaDB.GetStable(key)
+	encKey, err := w.stableCodec.StableEncode(key)
+	if err != nil {
+		return nil, err
+	}
+	encVal, err := w.metaDB.GetStable(encKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(encVal) == 0 {
+		// Not set, return empty byte slice per interface contract
+		return []byte{}, nil
+	}
+	val, err := w.stableCodec.StableDecode(encVal)
+	if err != nil {
+		return nil, err
+	}
+	return val, nil
 }
 
 // SetUint64 implements raft.StableStore. We assume the same key space as Set

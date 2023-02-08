@@ -22,6 +22,14 @@ func WithCodec(c Codec) walOpt {
 	}
 }
 
+// WithStableCodec is an option which allows a custom StableCodec to be
+// provided to the WAL. If not used the default StableCodec is used.
+func WithStableCodec(s StableCodec) walOpt {
+	return func(w *WAL) {
+		w.stableCodec = s
+	}
+}
+
 // WithMetaStore is an option that allows a custom MetaStore to be provided to
 // the WAL. If not used the default MetaStore is used.
 func WithMetaStore(db types.MetaStore) walOpt {
@@ -66,12 +74,19 @@ func (w *WAL) applyDefaultsAndValidate() error {
 		return fmt.Errorf("codec is using a reserved ID (below %d)", FirstExternalCodecID)
 	}
 
+	if w.stableCodec != nil && w.stableCodec.ID() < FirstExternalStableCodecID {
+		return fmt.Errorf("stableCodec is using a reserved ID (below %d)", FirstExternalCodecID)
+	}
+
 	// Defaults
 	if w.log == nil {
 		w.log = hclog.Default().Named("wal")
 	}
 	if w.codec == nil {
 		w.codec = &BinaryCodec{}
+	}
+	if w.stableCodec == nil {
+		w.stableCodec = &StablePassthruCodec{}
 	}
 	if w.sf == nil {
 		// These are not actually swappable via options right now but we override

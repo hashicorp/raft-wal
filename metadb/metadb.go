@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/hashicorp/raft-wal/types"
 	"go.etcd.io/bbolt"
@@ -22,8 +23,9 @@ const (
 	MetaBucket   = "wal-meta"
 	StableBucket = "stable"
 
-	// We just need one key for now so use the byte 'm' for meta arbitrarily.
-	MetaKey = "m"
+	// We just need two keys for now so use these bytes arbitrarily.
+	MetaKey  = "m"
+	CodecKey = "c"
 )
 
 var (
@@ -149,7 +151,7 @@ func safeInitBoltDB(dir string) error {
 // Load loads the existing persisted state. If there is no existing state
 // implementations are expected to create initialize new storage and return an
 // empty state.
-func (db *BoltMetaDB) Load(dir string) (types.PersistentState, error) {
+func (db *BoltMetaDB) Load(dir string, stableCodec uint64) (types.PersistentState, error) {
 	var state types.PersistentState
 
 	if err := db.ensureOpen(dir); err != nil {
@@ -163,17 +165,58 @@ func (db *BoltMetaDB) Load(dir string) (types.PersistentState, error) {
 	defer tx.Rollback()
 	meta := tx.Bucket([]byte(MetaBucket))
 
-	// We just need one key for now so use the byte 'm' for meta arbitrarily.
-	raw := meta.Get([]byte(MetaKey))
-	if raw == nil {
-		// This is valid it's an "empty" log that will be initialized by the WAL.
-		return state, nil
-	}
+	// TODO currently we do not apply the codec to the state
+	// data stored under MetaKey
 
-	if err := json.Unmarshal(raw, &state); err != nil {
-		return state, fmt.Errorf("%w: failed to parse persisted state: %s", types.ErrCorrupt, err)
+	rawState := meta.Get([]byte(MetaKey))
+	rawStableCodec := meta.Get([]byte(CodecKey))
+
+	if rawState == nil && rawStableCodec == nil {
+		// New file, set up and return
+
+		rawStableCodec = []byte(strconv.FormatUint(stableCodec, 10))
+		// This is the only time we have to write to metadb in Load, open
+		// a separate write transaction to keep the state safe
+		wtx, err := db.db.Begin(true)
+		if err != nil {
+			return state, err
+		}
+		defer wtx.Rollback()
+		wMeta := wtx.Bucket([]byte(MetaBucket))
+		err = wMeta.Put([]byte(CodecKey), []byte(rawStableCodec))
+		if err != nil {
+			return state, fmt.Errorf("Unable to set meta codec: %s", err)
+		}
+		err = wtx.Commit()
+		if err != nil {
+			return state, fmt.Errorf("Unable to set meta codec: %s", err)
+		}
+		return state, nil
+	} else if rawState != nil && rawStableCodec != nil {
+		// Entirely initialized file, unmarshal data, sanity
+		// check, and return
+
+		codec, err := strconv.ParseUint(string(rawStableCodec), 10, 64)
+		if err != nil {
+			return state, fmt.Errorf("%w: stable codec unparsable as Uint64, got %v",
+				types.ErrCorrupt, rawStableCodec)
+		}
+
+		if codec != stableCodec {
+			return state, fmt.Errorf("%w: stable codec mismatch, configured %d loaded %d",
+				types.ErrCorrupt, stableCodec, codec)
+		}
+		if err = json.Unmarshal(rawState, &state); err != nil {
+			return state, fmt.Errorf("%w: failed to parse persisted state: %s", types.ErrCorrupt, err)
+		}
+
+		return state, nil
+	} else {
+		// Either one of rawState or stableCodec is set but the
+		// other is not, this is an invalid state
+		return state, fmt.Errorf("%w: invalid file, both should be set: state %v codec %v",
+			types.ErrCorrupt, rawState, rawStableCodec)
 	}
-	return state, nil
 }
 
 // CommitState must atomically replace all persisted metadata in the current
@@ -181,7 +224,8 @@ func (db *BoltMetaDB) Load(dir string) (types.PersistentState, error) {
 // durably and in a crash-safe way otherwise the guarantees of the WAL will be
 // compromised. The WAL will only ever call this in a single thread at one
 // time and it will never be called concurrently with Load however it may be
-// called concurrently with Get/SetStable operations.
+// called concurrently with Get/SetStable operations. TODO: currently codec
+// is not applied to this data
 func (db *BoltMetaDB) CommitState(state types.PersistentState) error {
 	if db.db == nil {
 		return ErrUnintialized

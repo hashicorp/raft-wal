@@ -12,7 +12,9 @@ type MetaStore interface {
 	// Load loads the existing persisted state. If there is no existing state
 	// implementations are expected to create initialize new storage and return an
 	// empty state.
-	Load(dir string) (PersistentState, error)
+	Load(dir string, stableCodec uint64) (PersistentState, error)
+
+	// TODO how do we handle changing the codec?
 
 	// CommitState must atomically replace all persisted metadata in the current
 	// store with the set provided. It must not return until the data is persisted
