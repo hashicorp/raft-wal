@@ -367,7 +367,39 @@ func (w *Writer) appendEntry(e types.LogEntry) error {
 		typ: FrameEntry,
 		len: uint32(len(e.Data)),
 	}
-	return w.appendFrame(fh, e.Data)
+
+	bufOffset, err := w.appendFrame(fh, e.Data)
+	if err != nil {
+		return err
+	}
+
+	// If frame is an entry, update the index
+	offsets := w.getOffsets()
+
+	if len(offsets) == 0 && w.info.BaseIndex == 1 {
+		for i := 0; i < int(e.Index)-1; i++ {
+			offsets = append(offsets, 0)
+		}
+
+		// TODO: this is racy
+		w.info.MinIndex = e.Index
+	}
+
+	// Add the index entry. Note this is safe despite mutating the same backing
+	// array as tail because it's beyond the limit current readers will access
+	// until we do the atomic update below. Even if append re-allocates the
+	// backing array, it will only read the indexes smaller than numEntries from
+	// the old array to copy them into the new one and we are not mutating the
+	// same memory locations. Old readers might still be looking at the old
+	// array (lower than numEntries) through the current tail.offsets slice but
+	// we are not touching that at least below numEntries.
+	offsets = append(offsets, w.writer.writeOffset+uint32(bufOffset))
+
+	// Now we can make it available to readers. Note that readers still
+	// shouldn't read it until we actually commit to disk (and increment
+	// commitIdx) but it's race free for them to now!
+	w.offsets.Store(offsets)
+	return nil
 }
 
 func (w *Writer) appendCommit() error {
@@ -375,7 +407,7 @@ func (w *Writer) appendCommit() error {
 		typ: FrameCommit,
 		crc: w.writer.crc,
 	}
-	if err := w.appendFrame(fh, nil); err != nil {
+	if _, err := w.appendFrame(fh, nil); err != nil {
 		return err
 	}
 
@@ -430,14 +462,14 @@ func (w *Writer) appendIndex() error {
 
 // appendFrame appends the given frame to the current block. The frame must fit
 // already otherwise an error will be returned.
-func (w *Writer) appendFrame(fh frameHeader, data []byte) error {
+func (w *Writer) appendFrame(fh frameHeader, data []byte) (int, error) {
 	// Encode frame header into current block buffer
 	l := encodedFrameSize(len(data))
 	w.ensureBufCap(l)
 
 	bufOffset := len(w.writer.commitBuf)
 	if err := writeFrame(w.writer.commitBuf[bufOffset:bufOffset+l], fh, data); err != nil {
-		return err
+		return 0, err
 	}
 	// Update len of commitBuf since we resliced it for the write
 	w.writer.commitBuf = w.writer.commitBuf[:bufOffset+l]
@@ -445,26 +477,7 @@ func (w *Writer) appendFrame(fh frameHeader, data []byte) error {
 	// Update the CRC
 	w.writer.crc = crc32.Update(w.writer.crc, castagnoliTable, w.writer.commitBuf[bufOffset:bufOffset+l])
 
-	// If frame is an entry, update the index
-	if fh.typ == FrameEntry {
-		offsets := w.getOffsets()
-
-		// Add the index entry. Note this is safe despite mutating the same backing
-		// array as tail because it's beyond the limit current readers will access
-		// until we do the atomic update below. Even if append re-allocates the
-		// backing array, it will only read the indexes smaller than numEntries from
-		// the old array to copy them into the new one and we are not mutating the
-		// same memory locations. Old readers might still be looking at the old
-		// array (lower than numEntries) through the current tail.offsets slice but
-		// we are not touching that at least below numEntries.
-		offsets = append(offsets, w.writer.writeOffset+uint32(bufOffset))
-
-		// Now we can make it available to readers. Note that readers still
-		// shouldn't read it until we actually commit to disk (and increment
-		// commitIdx) but it's race free for them to now!
-		w.offsets.Store(offsets)
-	}
-	return nil
+	return bufOffset, nil
 }
 
 func (w *Writer) flush() error {

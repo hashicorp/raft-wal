@@ -6,7 +6,7 @@ package types
 import "errors"
 
 var (
-	ErrNotFound = errors.New("log entry not found")
+	ErrNotFound = errors.New("log not found")
 	ErrCorrupt  = errors.New("WAL is corrupt")
 	ErrSealed   = errors.New("segment is sealed")
 	ErrClosed   = errors.New("closed")
