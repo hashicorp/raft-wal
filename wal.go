@@ -247,6 +247,13 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 // mutate caller.
 type stateTxn func(s *state) (finalizer func(), postCommit func() error, err error)
 
+// IsMonotonic always return true because appended log entries must have
+// monotonically increasing index fields with no gaps. This implements the
+// MonotonicLogStore interface residing in raft library.
+func (w *WAL) IsMonotonic() bool {
+	return true
+}
+
 func (w *WAL) loadState() *state {
 	return w.s.Load().(*state)
 }
