@@ -143,7 +143,7 @@ func (r *Reader) findFrameOffset(idx uint64) (uint32, error) {
 
 	// IndexStart is the offset to the first entry in the index array. We need to
 	// find the byte offset to the Nth entry
-	entryOffset := (idx - r.info.BaseIndex)
+	entryOffset := idx - r.info.BaseIndex
 	byteOffset := r.info.IndexStart + (entryOffset * 4)
 
 	var bs [4]byte

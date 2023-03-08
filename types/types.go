@@ -3,10 +3,14 @@
 
 package types
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/hashicorp/raft"
+)
 
 var (
-	ErrNotFound = errors.New("log not found")
+	ErrNotFound = raft.ErrLogNotFound
 	ErrCorrupt  = errors.New("WAL is corrupt")
 	ErrSealed   = errors.New("segment is sealed")
 	ErrClosed   = errors.New("closed")
