@@ -22,6 +22,39 @@ func TestFileName(t *testing.T) {
 	require.Equal(t, "00000007394872394732-00ab1234cd4567ef.wal", fn)
 }
 
+func TestSegmentReadBeforeAfterFirstIndex(t *testing.T) {
+	vfs := newTestVFS()
+
+	f := NewFiler("test", vfs)
+
+	seg0 := testSegment(1)
+
+	w, err := f.Create(seg0)
+	require.NoError(t, err)
+	defer w.Close()
+
+	// Should not be able to read that from tail
+	_, err = w.GetLog(1)
+	require.Error(t, types.ErrNotFound)
+
+	// Append to writer
+	err = w.Append([]types.LogEntry{{Index: 1, Data: []byte("one")}})
+	require.NoError(t, err)
+
+	// Should be able to read that from tail (can't use "open" yet to read it
+	// separately since it's not a sealed segment).
+	got, err := w.GetLog(1)
+	require.NoError(t, err)
+	require.Equal(t, []byte("one"), got.Bs)
+
+	_, err = w.GetLog(0)
+	require.Error(t, types.ErrNotFound)
+
+	_, err = w.GetLog(2)
+	require.Error(t, types.ErrNotFound)
+
+}
+
 func TestSegmentBasics(t *testing.T) {
 	vfs := newTestVFS()
 
