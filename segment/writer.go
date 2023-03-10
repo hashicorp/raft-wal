@@ -373,16 +373,8 @@ func (w *Writer) appendEntry(e types.LogEntry) error {
 		return err
 	}
 
-	// If frame is an entry, update the index
+	// updating the index
 	offsets := w.getOffsets()
-
-	if len(offsets) == 0 && w.info.BaseIndex == 1 {
-		for i := 0; i < int(e.Index)-1; i++ {
-			offsets = append(offsets, 0)
-		}
-
-		atomic.StoreUint64(&w.info.MinIndex, e.Index)
-	}
 
 	// Add the index entry. Note this is safe despite mutating the same backing
 	// array as tail because it's beyond the limit current readers will access
@@ -392,6 +384,16 @@ func (w *Writer) appendEntry(e types.LogEntry) error {
 	// same memory locations. Old readers might still be looking at the old
 	// array (lower than numEntries) through the current tail.offsets slice but
 	// we are not touching that at least below numEntries.
+	if len(offsets) == 0 && w.info.BaseIndex == 1 {
+		for i := 0; i < int(e.Index)-1; i++ {
+			offsets = append(offsets, 0)
+		}
+
+		fmt.Println("****e index", e.Index)
+		//w.info.MinIndex = e.Index
+		atomic.StoreUint64(&w.info.MinIndex, e.Index)
+	}
+
 	offsets = append(offsets, w.writer.writeOffset+uint32(bufOffset))
 
 	// Now we can make it available to readers. Note that readers still

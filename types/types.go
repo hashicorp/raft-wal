@@ -10,6 +10,9 @@ import (
 )
 
 var (
+	// ErrNotFound The raft library checks equality on the error to handle
+	// certain cases, so we must return the same exact error as the raft
+	// library defined here.
 	ErrNotFound = raft.ErrLogNotFound
 	ErrCorrupt  = errors.New("WAL is corrupt")
 	ErrSealed   = errors.New("segment is sealed")

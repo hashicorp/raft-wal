@@ -35,7 +35,7 @@ func TestSegmentReadBeforeAfterFirstIndex(t *testing.T) {
 
 	// Should not be able to read that from tail
 	_, err = w.GetLog(1)
-	require.Error(t, types.ErrNotFound)
+	require.ErrorIs(t, err, types.ErrNotFound)
 
 	// Append to writer
 	err = w.Append([]types.LogEntry{{Index: 1, Data: []byte("one")}})
@@ -48,11 +48,43 @@ func TestSegmentReadBeforeAfterFirstIndex(t *testing.T) {
 	require.Equal(t, []byte("one"), got.Bs)
 
 	_, err = w.GetLog(0)
-	require.Error(t, types.ErrNotFound)
+	require.ErrorIs(t, err, types.ErrNotFound)
 
 	_, err = w.GetLog(2)
-	require.Error(t, types.ErrNotFound)
+	require.ErrorIs(t, err, types.ErrNotFound)
+}
 
+func TestSegmentStartingFromHighIndexThanBase(t *testing.T) {
+	vfs := newTestVFS()
+
+	f := NewFiler("test", vfs)
+
+	seg0 := testSegment(1)
+
+	w, err := f.Create(seg0)
+	require.NoError(t, err)
+	defer w.Close()
+
+	// Should not be able to read that from tail
+	_, err = w.GetLog(1)
+	require.ErrorIs(t, err, types.ErrNotFound)
+
+	// Append to writer
+	err = w.Append([]types.LogEntry{{Index: 5, Data: []byte("one")}})
+	require.NoError(t, err)
+
+	_, err = w.GetLog(0)
+	require.ErrorIs(t, err, types.ErrNotFound)
+
+	_, err = w.GetLog(4)
+	require.ErrorIs(t, err, types.ErrNotFound)
+
+	got, err := w.GetLog(5)
+	require.Equal(t, []byte("one"), got.Bs)
+	require.NoError(t, err)
+
+	_, err = w.GetLog(6)
+	require.ErrorIs(t, err, types.ErrNotFound)
 }
 
 func TestSegmentBasics(t *testing.T) {
