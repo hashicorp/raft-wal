@@ -389,8 +389,6 @@ func (w *Writer) appendEntry(e types.LogEntry) error {
 			offsets = append(offsets, 0)
 		}
 
-		fmt.Println("****e index", e.Index)
-		//w.info.MinIndex = e.Index
 		atomic.StoreUint64(&w.info.MinIndex, e.Index)
 	}
 
