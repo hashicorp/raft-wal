@@ -58,7 +58,7 @@ type Writer struct {
 		indexStart uint64
 	}
 
-	info types.SegmentInfo
+	info atomic.Value // types.SegmentInfo
 	wf   types.WritableFile
 	r    types.SegmentReader
 }
@@ -69,10 +69,13 @@ func createFile(info types.SegmentInfo, wf types.WritableFile, bufPool *sync.Poo
 		return nil, err
 	}
 	w := &Writer{
-		info: info,
+		info: atomic.Value{},
 		wf:   wf,
 		r:    r,
 	}
+
+	w.info.Store(info)
+
 	r.tail = w
 	if err := w.initEmpty(); err != nil {
 		return nil, err
@@ -86,10 +89,13 @@ func recoverFile(info types.SegmentInfo, wf types.WritableFile, bufPool *sync.Po
 		return nil, err
 	}
 	w := &Writer{
-		info: info,
+		info: atomic.Value{},
 		wf:   wf,
 		r:    r,
 	}
+
+	w.info.Store(info)
+
 	r.tail = w
 
 	if err := w.recoverTail(); err != nil {
@@ -105,7 +111,7 @@ func (w *Writer) initEmpty() error {
 	w.ensureBufCap(fileHeaderLen)
 	w.writer.commitBuf = w.writer.commitBuf[:fileHeaderLen]
 
-	if err := writeFileHeader(w.writer.commitBuf, w.info); err != nil {
+	if err := writeFileHeader(w.writer.commitBuf, w.SegmentInfo()); err != nil {
 		return err
 	}
 
@@ -243,7 +249,7 @@ READ:
 		if len(ofs) > 0 {
 			// Non atomic is OK because this file is not visible to any other threads
 			// yet.
-			w.commitIdx = w.info.BaseIndex + uint64(len(ofs)) - 1
+			w.commitIdx = w.infoBaseIndex() + uint64(len(ofs)) - 1
 		}
 	}()
 
@@ -258,7 +264,7 @@ READ:
 		w.offsets.Store(offsets)
 
 		// Since at least one commit was found, the header better be valid!
-		return validateFileHeader(*readInfo, w.info)
+		return validateFileHeader(*readInfo, w.SegmentInfo())
 	}
 
 	// Last frame was a commit frame! Let's check that all the data written in
@@ -281,7 +287,7 @@ READ:
 		w.offsets.Store(offsets)
 
 		// Since at least one commit was found, the header better be valid!
-		return validateFileHeader(*readInfo, w.info)
+		return validateFileHeader(*readInfo, w.SegmentInfo())
 	}
 
 	// Last commit was incomplete rewind back to the previous one or start of file
@@ -296,7 +302,7 @@ READ:
 	w.offsets.Store(offsets)
 
 	// Since at least one commit was found, the header better be valid!
-	return validateFileHeader(*readInfo, w.info)
+	return validateFileHeader(*readInfo, w.SegmentInfo())
 }
 
 // Close implements io.Closer
@@ -329,7 +335,7 @@ func (w *Writer) Append(entries []types.LogEntry) error {
 
 	ofs := w.getOffsets()
 	// Work out if we need to seal before we commit and sync.
-	if (w.writer.writeOffset + uint32(len(w.writer.commitBuf)+indexFrameSize(len(ofs)))) > w.info.SizeLimit {
+	if (w.writer.writeOffset + uint32(len(w.writer.commitBuf)+indexFrameSize(len(ofs)))) > w.infoSizeLimit() {
 		// Seal the segment! We seal it by writing an index frame before we commit.
 		if err := w.appendIndex(); err != nil {
 			return err
@@ -353,11 +359,11 @@ func (w *Writer) getOffsets() []uint32 {
 // OffsetForFrame implements tailWriter and allows readers to lookup entry
 // frames in the tail's in-memory index.
 func (w *Writer) OffsetForFrame(idx uint64) (uint32, error) {
-	if idx < w.info.BaseIndex || idx < w.info.MinIndex || idx > w.LastIndex() {
+	if idx < w.infoBaseIndex() || idx < w.infoMinIndex() || idx > w.LastIndex() {
 		return 0, types.ErrNotFound
 	}
 	os := w.getOffsets()
-	entryIndex := idx - w.info.BaseIndex
+	entryIndex := idx - w.infoBaseIndex()
 	// No bounds check on entryIndex since LastIndex must ensure it's in bounds.
 	return os[entryIndex], nil
 }
@@ -384,12 +390,14 @@ func (w *Writer) appendEntry(e types.LogEntry) error {
 	// same memory locations. Old readers might still be looking at the old
 	// array (lower than numEntries) through the current tail.offsets slice but
 	// we are not touching that at least below numEntries.
-	if len(offsets) == 0 && w.info.BaseIndex == 1 {
+	if len(offsets) == 0 && w.infoBaseIndex() == 1 {
 		for i := 0; i < int(e.Index)-1; i++ {
 			offsets = append(offsets, 0)
 		}
 
-		atomic.StoreUint64(&w.info.MinIndex, e.Index)
+		segmentInfo := w.SegmentInfo()
+		segmentInfo.MinIndex = e.Index
+		w.swapSegmentInfo(segmentInfo)
 	}
 
 	offsets = append(offsets, w.writer.writeOffset+uint32(bufOffset))
@@ -514,7 +522,7 @@ func (w *Writer) sync() error {
 	if len(offsets) > 0 {
 		// Probably not possible for the to be less, but just in case we ever flush
 		// the file with only meta data written...
-		commitIdx = uint64(w.info.BaseIndex) + uint64(len(offsets)) - 1
+		commitIdx = w.infoBaseIndex() + uint64(len(offsets)) - 1
 	}
 	atomic.StoreUint64(&w.commitIdx, commitIdx)
 	return nil
@@ -538,4 +546,29 @@ func (w *Writer) Sealed() (bool, uint64, error) {
 // atomic int. If the segment is empty lastIndex should return zero.
 func (w *Writer) LastIndex() uint64 {
 	return atomic.LoadUint64(&w.commitIdx)
+}
+
+// SegmentInfo returns writer's atomic info field
+func (w *Writer) SegmentInfo() types.SegmentInfo {
+	return w.info.Load().(types.SegmentInfo)
+}
+
+// infoSizeLimit returns SizeLimit field of writer's info field
+func (w *Writer) infoSizeLimit() uint32 {
+	return w.SegmentInfo().SizeLimit
+}
+
+// infoBaseIndex returns BaseIndex field of writer's info field
+func (w *Writer) infoBaseIndex() uint64 {
+	return w.SegmentInfo().BaseIndex
+}
+
+// infoMinIndex returns MinIndex field of writer's info field
+func (w *Writer) infoMinIndex() uint64 {
+	return w.SegmentInfo().MinIndex
+}
+
+// swapSegmentInfo swaps the writer's info field with new info
+func (w *Writer) swapSegmentInfo(info types.SegmentInfo) {
+	w.info.Swap(info)
 }
