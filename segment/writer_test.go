@@ -4,6 +4,7 @@
 package segment
 
 import (
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,9 +33,10 @@ func TestConcurrentReadersAndWriter(t *testing.T) {
 	var lastIndexWritten uint64
 	var sealedMaxIndex uint64
 	var numReads uint64
+	startIndex := uint64(3)
 
 	writer := func() {
-		idx := uint64(1)
+		idx := startIndex
 		for {
 			err := wf.Append([]types.LogEntry{{Index: idx, Data: []byte("test")}})
 			if err != nil {
@@ -56,7 +58,7 @@ func TestConcurrentReadersAndWriter(t *testing.T) {
 
 	reader := func(doneCh chan<- struct{}) {
 		// Follow the tail
-		idx := uint64(1)
+		idx := startIndex
 		for {
 			// Complete once writer has stopped and we've read all of it's written
 			// entries.
@@ -87,6 +89,17 @@ func TestConcurrentReadersAndWriter(t *testing.T) {
 	for i := 0; i < cap(done); i++ {
 		go reader(done)
 	}
+
+	// We are adding this function to make sure updating MinIndex
+	// does not cause a race condition
+	wg := sync.WaitGroup{}
+	go func() {
+		wg.Add(1)
+		defer wg.Done()
+		wf.GetLog(startIndex)
+	}()
+	wg.Wait()
+
 	go writer()
 
 	complete := 0
