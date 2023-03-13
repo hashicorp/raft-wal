@@ -10,7 +10,8 @@ import (
 )
 
 var (
-	// ErrNotFound The raft library checks equality on the error to handle
+	// ErrNotFound is returned when there is no log at the requested index. 
+	// The raft library checks equality on the error to handle
 	// certain cases, so we must return the same exact error as the raft
 	// library defined here.
 	ErrNotFound = raft.ErrLogNotFound
