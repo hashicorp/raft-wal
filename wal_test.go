@@ -30,111 +30,111 @@ func TestWALOpen(t *testing.T) {
 		expectFirstIndex uint64
 		expectLastIndex  uint64
 	}{
-		// {
-		// 	name: "invalid custom codec",
-		// 	walOpts: []walOpt{
-		// 		WithCodec(&BinaryCodec{}),
-		// 	},
-		// 	expectErr: "codec is using a reserved ID",
-		// },
-		// {
-		// 	name: "empty dir creates new log",
-		// 	// Should end up with one segment created with baseIndex 1
-		// 	expectSegmentBases: []uint64{1},
-		// 	expectCalls: map[string]int{
-		// 		"Create":      1,
-		// 		"CommitState": 1,
-		// 		"List":        1,
-		// 		"Load":        1,
-		// 	},
-		// 	expectFirstIndex: 0,
-		// 	expectLastIndex:  0,
-		// },
-		// {
-		// 	name: "single segment recovery",
-		// 	tsOpts: []testStorageOpt{
-		// 		segTail(10), // Single tail segment with 10 entries
-		// 	},
-		// 	expectSegmentBases: []uint64{1},
-		// 	expectCalls: map[string]int{
-		// 		"List":        1,
-		// 		"Load":        1,
-		// 		"RecoverTail": 1,
-		// 	},
-		// 	expectFirstIndex: 1,
-		// 	expectLastIndex:  10,
-		// },
-		// {
-		// 	name: "multiple segment recovery",
-		// 	tsOpts: []testStorageOpt{
-		// 		segFull(),
-		// 		segFull(),
-		// 		segTail(10),
-		// 	},
-		// 	expectSegmentBases: []uint64{1, 101, 201},
-		// 	expectCalls: map[string]int{
-		// 		"List":        1,
-		// 		"Load":        1,
-		// 		"RecoverTail": 1,
-		// 		"Open":        2,
-		// 	},
-		// 	expectFirstIndex: 1,
-		// 	expectLastIndex:  210,
-		// },
-		// {
-		// 	name: "metadb load fails",
-		// 	tsOpts: []testStorageOpt{
-		// 		func(ts *testStorage) {
-		// 			ts.loadErr = os.ErrNotExist
-		// 		},
-		// 	},
-		// 	expectErr: "file does not exist",
-		// },
-		// {
-		// 	// This is kinda far-fetched since meta db is typically in same Dir, but
-		// 	// it _might_ not be with a custom MetaStore.
-		// 	name: "list fails",
-		// 	tsOpts: []testStorageOpt{
-		// 		func(ts *testStorage) {
-		// 			ts.listErr = os.ErrNotExist
-		// 		},
-		// 	},
-		// 	expectErr: "file does not exist",
-		// },
-		// {
-		// 	name: "invalid codec",
-		// 	tsOpts: []testStorageOpt{
-		// 		segFull(),
-		// 		segFull(),
-		// 		segTail(10),
-		// 		func(ts *testStorage) {
-		// 			// Invalid codec we don't know how to decode.
-		// 			ts.metaState.Segments[0].Codec = 1234
-		// 		},
-		// 	},
-		// 	expectErr: "uses an unknown codec",
-		// },
-		// {
-		// 	name: "recover tail fails",
-		// 	tsOpts: []testStorageOpt{
-		// 		segTail(10),
-		// 		func(ts *testStorage) {
-		// 			ts.recoverErr = ErrCorrupt
-		// 		},
-		// 	},
-		// 	expectErr: "corrupt",
-		// },
-		// {
-		// 	name: "open fails",
-		// 	tsOpts: []testStorageOpt{
-		// 		segFull(),
-		// 		segTail(10),
-		// 		func(ts *testStorage) {
-		// 			ts.openErr = os.ErrNotExist
-		// 		},
-		// 	},
-		// 	expectErr: "file does not exist",
-		// },
+		{
+			name: "invalid custom codec",
+			walOpts: []walOpt{
+				WithCodec(&BinaryCodec{}),
+			},
+			expectErr: "codec is using a reserved ID",
+		},
+		{
+			name: "empty dir creates new log",
+			// Should end up with one segment created with baseIndex 1
+			expectSegmentBases: []uint64{1},
+			expectCalls: map[string]int{
+				"Create":      1,
+				"CommitState": 1,
+				"List":        1,
+				"Load":        1,
+			},
+			expectFirstIndex: 0,
+			expectLastIndex:  0,
+		},
+		{
+			name: "single segment recovery",
+			tsOpts: []testStorageOpt{
+				segTail(10), // Single tail segment with 10 entries
+			},
+			expectSegmentBases: []uint64{1},
+			expectCalls: map[string]int{
+				"List":        1,
+				"Load":        1,
+				"RecoverTail": 1,
+			},
+			expectFirstIndex: 1,
+			expectLastIndex:  10,
+		},
+		{
+			name: "multiple segment recovery",
+			tsOpts: []testStorageOpt{
+				segFull(),
+				segFull(),
+				segTail(10),
+			},
+			expectSegmentBases: []uint64{1, 101, 201},
+			expectCalls: map[string]int{
+				"List":        1,
+				"Load":        1,
+				"RecoverTail": 1,
+				"Open":        2,
+			},
+			expectFirstIndex: 1,
+			expectLastIndex:  210,
+		},
+		{
+			name: "metadb load fails",
+			tsOpts: []testStorageOpt{
+				func(ts *testStorage) {
+					ts.loadErr = os.ErrNotExist
+				},
+			},
+			expectErr: "file does not exist",
+		},
+		{
+			// This is kinda far-fetched since meta db is typically in same Dir, but
+			// it _might_ not be with a custom MetaStore.
+			name: "list fails",
+			tsOpts: []testStorageOpt{
+				func(ts *testStorage) {
+					ts.listErr = os.ErrNotExist
+				},
+			},
+			expectErr: "file does not exist",
+		},
+		{
+			name: "invalid codec",
+			tsOpts: []testStorageOpt{
+				segFull(),
+				segFull(),
+				segTail(10),
+				func(ts *testStorage) {
+					// Invalid codec we don't know how to decode.
+					ts.metaState.Segments[0].Codec = 1234
+				},
+			},
+			expectErr: "uses an unknown codec",
+		},
+		{
+			name: "recover tail fails",
+			tsOpts: []testStorageOpt{
+				segTail(10),
+				func(ts *testStorage) {
+					ts.recoverErr = ErrCorrupt
+				},
+			},
+			expectErr: "corrupt",
+		},
+		{
+			name: "open fails",
+			tsOpts: []testStorageOpt{
+				segFull(),
+				segTail(10),
+				func(ts *testStorage) {
+					ts.openErr = os.ErrNotExist
+				},
+			},
+			expectErr: "file does not exist",
+		},
 		{
 			name: "commit fails",
 			tsOpts: []testStorageOpt{
