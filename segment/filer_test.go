@@ -37,6 +37,10 @@ func TestSegmentBasics(t *testing.T) {
 	// being created and written to).
 	require.False(t, w.(*Writer).wf.(*testWritableFile).dirty)
 
+	// Try to write a log that is not the base index
+	err = w.Append([]types.LogEntry{{Index: 2, Data: []byte("two")}})
+	require.Error(t, err)
+
 	// Append to writer
 	err = w.Append([]types.LogEntry{{Index: 1, Data: []byte("one")}})
 	require.NoError(t, err)
@@ -56,6 +60,10 @@ func TestSegmentBasics(t *testing.T) {
 	got, err := w.GetLog(1)
 	require.NoError(t, err)
 	require.Equal(t, []byte("one"), got.Bs)
+
+	// Try to write a log that is not the expected next index (which would be 2)
+	err = w.Append([]types.LogEntry{{Index: 10, Data: []byte("ten")}})
+	require.Error(t, err)
 
 	expectVals := append([]string{}, "one")
 	// OK, now write some more.
