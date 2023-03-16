@@ -13,8 +13,13 @@ import (
 
 	"github.com/hashicorp/raft"
 	"github.com/hashicorp/raft-wal/metrics"
+	"github.com/hashicorp/raft-wal/types"
 	"github.com/stretchr/testify/require"
 )
+
+func TestNotFoundErrType(t *testing.T) {
+	require.Equal(t, types.ErrNotFound, raft.ErrLogNotFound)
+}
 
 func TestWALOpen(t *testing.T) {
 	cases := []struct {
