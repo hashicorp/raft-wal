@@ -15,6 +15,9 @@ import (
 	"github.com/hashicorp/raft-wal/metrics"
 )
 
+var _ raft.LogStore = &LogStore{}
+var _ raft.MonotonicLogStore = &LogStore{}
+
 // LogStore is a raft.LogStore that acts as middleware around an underlying
 // persistent store. It provides support for periodically verifying that ranges
 // of logs read back from the LogStore match the values written, and the values
@@ -238,4 +241,13 @@ func (s *LogStore) Close() error {
 		return closer.Close()
 	}
 	return nil
+}
+
+// IsMonotonic implements the raft.MonotonicLogStore interface. This is a shim
+// to expose the underlying store as monotonically indexed or not.
+func (s *LogStore) IsMonotonic() bool {
+	if store, ok := s.s.(raft.MonotonicLogStore); ok {
+		return store.IsMonotonic()
+	}
+	return false
 }

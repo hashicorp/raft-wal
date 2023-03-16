@@ -34,6 +34,10 @@ var (
 	DefaultSegmentSize = 64 * 1024 * 1024
 )
 
+var _ raft.LogStore = &WAL{}
+var _ raft.MonotonicLogStore = &WAL{}
+var _ raft.StableStore = &WAL{}
+
 // WAL is a write-ahead log suitable for github.com/hashicorp/raft.
 type WAL struct {
 	closed uint32 // atomically accessed to keep it first in struct for alignment.
@@ -924,4 +928,10 @@ func (w *WAL) Close() error {
 		})
 	}
 	return nil
+}
+
+// IsMonotonic implements raft.MonotonicLogStore and informs the raft library
+// that this store will only allow consecutive log indexes with no gaps.
+func (w *WAL) IsMonotonic() bool {
+	return true
 }
