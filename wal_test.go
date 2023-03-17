@@ -13,8 +13,13 @@ import (
 
 	"github.com/hashicorp/raft"
 	"github.com/hashicorp/raft-wal/metrics"
+	"github.com/hashicorp/raft-wal/types"
 	"github.com/stretchr/testify/require"
 )
+
+func TestNotFoundErrType(t *testing.T) {
+	require.Equal(t, types.ErrNotFound, raft.ErrLogNotFound)
+}
 
 func TestWALOpen(t *testing.T) {
 	cases := []struct {
@@ -275,8 +280,9 @@ func TestStoreLogs(t *testing.T) {
 		store2    []*raft.Log
 		expectErr string
 		// validate recovery of data
-		expectFirstIndex uint64
-		expectLastIndex  uint64
+		expectFirstIndex     uint64
+		expectLastIndex      uint64
+		expectFirstBaseIndex uint64
 	}{
 		{
 			name:             "empty log append",
@@ -289,6 +295,8 @@ func TestStoreLogs(t *testing.T) {
 			store:            makeRaftLogs(10000, 5),
 			expectFirstIndex: 10000,
 			expectLastIndex:  10004,
+			// Ensure we actually re-created the first segment with the right base index.
+			expectFirstBaseIndex: 10000,
 		},
 		{
 			name: "existing segment log append",
@@ -389,6 +397,9 @@ func TestStoreLogs(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, int(tc.expectLastIndex), int(last))
 
+			// Check all the internal meta/segment state meets our invariants
+			ts.assertValidMetaState(t)
+
 			// Check all log entries exist that are meant to
 			if tc.expectLastIndex > 0 {
 				firstAppended := tc.expectLastIndex - uint64(len(tc.store)+len(tc.store2)) + 1
@@ -416,6 +427,22 @@ func TestStoreLogs(t *testing.T) {
 						require.Equal(t, want.AppendedAt.Round(1), log.AppendedAt.Round(1))
 					}
 				}
+			}
+
+			// Check the actual base index of the first segment is the one we expect.
+			// This is an internal detail, but it's important as the contract with the
+			// Segment layer is broken if we assume we can start logs at a higher
+			// index than the BaseIndex.
+			if tc.expectFirstBaseIndex > 0 {
+				segments, err := ts.List()
+				require.NoError(t, err)
+				// First segment would have been ID 0, abse index 1 but we should have
+				// replaced it with a segment with the correct base index which would
+				// have ID 1
+				require.Equal(t, map[uint64]uint64{1: tc.expectFirstBaseIndex}, segments)
+
+				// Ensure that the old file was closed and deleted
+				ts.assertDeletedAndClosed(t, 1)
 			}
 		})
 	}

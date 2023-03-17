@@ -28,6 +28,10 @@ type state struct {
 	finalizer atomic.Value // func()
 
 	nextSegmentID uint64
+
+	// nextBaseIndex is used to signal which baseIndex to use next if there are no
+	// segments or current tail.
+	nextBaseIndex uint64
 	segments      *immutable.SortedMap[uint64, segmentState]
 	tail          types.SegmentWriter
 }
@@ -151,8 +155,23 @@ func (s *state) lastIndex() uint64 {
 	if tailIdx > 0 {
 		return tailIdx
 	}
-	// Current tail is empty, so the largest log is the MaxIndex of the previous
-	// segment which must be the same as the tail's BaseIndex - 1 or zero.
+	// Current tail is empty. Check there are previous sealed segments.
+	it := s.segments.Iterator()
+	it.Last()
+	_, _, ok := it.Prev()
+	if !ok {
+		// No tail! shouldn't be possible but means no logs yet
+		return 0
+	}
+	// Go back to the segment before the tail
+	_, _, ok = it.Prev()
+	if !ok {
+		// No previous segment so the whole log is empty
+		return 0
+	}
+
+	// There was a previous segment so it's MaxIndex will be one less than the
+	// tail's BaseIndex.
 	tailSeg := s.getTailInfo()
 	if tailSeg == nil || tailSeg.BaseIndex == 0 {
 		return 0

@@ -34,6 +34,10 @@ var (
 	DefaultSegmentSize = 64 * 1024 * 1024
 )
 
+var _ raft.LogStore = &WAL{}
+var _ raft.MonotonicLogStore = &WAL{}
+var _ raft.StableStore = &WAL{}
+
 // WAL is a write-ahead log suitable for github.com/hashicorp/raft.
 type WAL struct {
 	closed uint32 // atomically accessed to keep it first in struct for alignment.
@@ -376,31 +380,36 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 	lastIdx := s.lastIndex()
 
 	// Special case, if the log is currently empty and this is the first append,
-	// we allow any starting index. But in most cases we've already created a
-	// segment with BaseIndex of 1 to start using. That means we need to update
-	// the metadata for the segment to set MinIndex. This is the only time we will
-	// force a metaDB sync on a StoreLogs call so it seems OK to ensure that
-	// MetaDB correctly reflects the range of logs stored. The alternative would
-	// be not to allocate the segment file at all until now but that would be even
-	// more expensive!
-	if lastIdx == 0 && logs[0].Index > 1 {
-		txn := func(s *state) (func(), func() error, error) {
-			seg1, ok := s.segments.Get(1)
-			if !ok {
-				// Can't happen!
-				return nil, nil, fmt.Errorf("invalid internal state! %w", ErrCorrupt)
-			}
-			// Note that we're mutating a copy of types.SegmentInfo since it's stored by value
-			// not reference.
-			seg1.MinIndex = logs[0].Index
-			s.segments = s.segments.Set(seg1.BaseIndex, seg1)
-			return nil, nil, nil
-		}
-
-		if err := w.mutateStateLocked(txn); err != nil {
+	// we allow any starting index. We've already created an empty tail segment
+	// though and probably started at index 1. Rather than break the invariant
+	// that BaseIndex is the same as the first index in the segment (which causes
+	// lots of extra complexity lower down) we simply accept the additional cost
+	// in this rare case of removing the current tail and re-creating it with the
+	// correct BaseIndex for the first log we are about to append. In practice,
+	// this only happens on startup of a new server, or after a user snapshot
+	// restore which are both rare enough events that the cost is not significant
+	// since the cost of creating other state or restoring snapshots is larger
+	// anyway. We could theoretically defer creating at all until we know for sure
+	// but that is more complex internally since then everything has to handle the
+	// uninitialized case where the is no tail yet with special cases.
+	ti := s.getTailInfo()
+	// Note we check index != ti.BaseIndex rather than index != 1 so that this
+	// works even if we choose to initialize first segments to a BaseIndex other
+	// than 1. For example it might be marginally more performant to choose to
+	// initialize to the old MaxIndex + 1 after a truncate since that is what our
+	// raft library will use after a restore currently so will avoid this case on
+	// the next append, while still being generally safe.
+	if lastIdx == 0 && logs[0].Index != ti.BaseIndex {
+		if err := w.resetEmptyFirstSegmentBaseIndex(logs[0].Index); err != nil {
 			return err
 		}
-		// Now we can append!
+
+		// Re-read state now we just changed it.
+		s2, release2 := w.acquireState()
+		defer release2()
+
+		// Overwrite the state we read before so the code below uses the new state
+		s = s2
 	}
 
 	// Encode logs
@@ -618,16 +627,19 @@ func (w *WAL) rotateSegmentLocked(indexStart uint64) error {
 // new segment appended. newState must be a copy, taken under write lock which
 // is still held by the caller and its segments map must contain all non-tail
 // segments that should be in the log, all must be sealed at this point. The new
-// segment's baseIndex will be the current last-segment's MaxIndex (or 0 if
-// non).
+// segment's baseIndex will be the current last-segment's MaxIndex + 1 (or 1 if
+// no current tail segment). The func returned is to be executed post
+// transaction commit to create the actual segment file.
 func (w *WAL) createNextSegment(newState *state) (func() error, error) {
 	// Find existing sealed tail
 	tail := newState.getTailInfo()
 
-	// If there is no tail, next baseIndex is 1
+	// If there is no tail, next baseIndex is 1 (or the requested next base index)
 	nextBaseIndex := uint64(1)
 	if tail != nil {
 		nextBaseIndex = tail.MaxIndex + 1
+	} else if newState.nextBaseIndex > 0 {
+		nextBaseIndex = newState.nextBaseIndex
 	}
 
 	// Create a new segment
@@ -662,8 +674,53 @@ func (w *WAL) createNextSegment(newState *state) (func() error, error) {
 	return post, nil
 }
 
+// resetEmptyFirstSegmentBaseIndex is used to change the baseIndex of the tail
+// segment file if its empty. This is needed when the first log written has a
+// different index to the base index that was assumed when the tail was created
+// (e.g. on startup). It will return an error if the log is not currently empty.
+func (w *WAL) resetEmptyFirstSegmentBaseIndex(newBaseIndex uint64) error {
+	txn := stateTxn(func(newState *state) (func(), func() error, error) {
+		if newState.lastIndex() > 0 {
+			return nil, nil, fmt.Errorf("can't reset BaseIndex on segment, log is not empty")
+		}
+
+		fin := func() {}
+
+		tailSeg := newState.getTailInfo()
+		if tailSeg != nil {
+			// There is an existing tail. Check if it needs to be replaced
+			if tailSeg.BaseIndex == newBaseIndex {
+				// It's fine as it is, no-op
+				return nil, nil, nil
+			}
+			// It needs to be removed
+			newState.segments = newState.segments.Delete(tailSeg.BaseIndex)
+			newState.tail = nil
+			fin = func() {
+				w.closeSegments([]io.Closer{tailSeg.r})
+				w.deleteSegments(map[uint64]uint64{tailSeg.ID: tailSeg.BaseIndex})
+			}
+		}
+
+		// Ensure the newly created tail has the right base index
+		newState.nextBaseIndex = newBaseIndex
+
+		// Create the new segment
+		post, err := w.createNextSegment(newState)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		return fin, post, nil
+	})
+
+	return w.mutateStateLocked(txn)
+}
+
 func (w *WAL) truncateHeadLocked(newMin uint64) error {
 	txn := stateTxn(func(newState *state) (func(), func() error, error) {
+		oldLastIndex := newState.lastIndex()
+
 		// Iterate the segments to find any that are entirely deleted.
 		toDelete := make(map[uint64]uint64)
 		toClose := make([]io.Closer, 0, 1)
@@ -691,7 +748,7 @@ func (w *WAL) truncateHeadLocked(newMin uint64) error {
 			toDelete[seg.ID] = seg.BaseIndex
 			toClose = append(toClose, seg.r)
 			newState.segments = newState.segments.Delete(seg.BaseIndex)
-			nTruncated += (maxIdx - seg.MinIndex + 1) // +1 becuase MaxIndex is inclusive
+			nTruncated += (maxIdx - seg.MinIndex + 1) // +1 because MaxIndex is inclusive
 		}
 
 		// There may not be any segments (left) but if there are, update the new
@@ -705,7 +762,11 @@ func (w *WAL) truncateHeadLocked(newMin uint64) error {
 		} else {
 			// If there is no head any more, then there is no tail either! We should
 			// create a new blank one ready for use when we next append like we do
-			// during initialization.
+			// during initialization. As an optimization, we create it with a
+			// BaseIndex of the old MaxIndex + 1 since this is what our Raft library
+			// uses as the next log index after a restore so this avoids recreating
+			// the files a second time on the next append.
+			newState.nextBaseIndex = oldLastIndex + 1
 			pc, err := w.createNextSegment(newState)
 			if err != nil {
 				return nil, nil, err
@@ -867,4 +928,10 @@ func (w *WAL) Close() error {
 		})
 	}
 	return nil
+}
+
+// IsMonotonic implements raft.MonotonicLogStore and informs the raft library
+// that this store will only allow consecutive log indexes with no gaps.
+func (w *WAL) IsMonotonic() bool {
+	return true
 }

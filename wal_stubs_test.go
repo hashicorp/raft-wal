@@ -288,6 +288,21 @@ func (ts *testStorage) assertValidMetaState(t *testing.T) {
 		if !isTail && seg.SealTime.IsZero() {
 			t.Fatalf("unsealed segment not at tail in committed state")
 		}
+
+		// Make sure that the first log in the segment is the same as its base index
+		// (if the segment exists already, it might not right after meta updated but
+		// segment not created yet which is exercised in some tests).
+		if ts, ok := ts.segments[seg.ID]; ok {
+			tss := ts.loadState()
+			require.Equal(t, seg.BaseIndex, tss.info.BaseIndex)
+			it := tss.logs.Iterator()
+			it.First()
+			if !it.Done() {
+				_, log, ok := it.Next()
+				require.True(t, ok)
+				require.Equal(t, seg.BaseIndex, log.Index)
+			}
+		}
 	}
 }
 
@@ -545,6 +560,10 @@ func (s *testSegment) Append(entries []types.LogEntry) error {
 			return errors.New("closed")
 		}
 		for _, e := range entries {
+			if e.Index != (newState.info.BaseIndex + uint64(newState.logs.Len())) {
+				return fmt.Errorf("non-monotonic append! BaseIndex=%d len=%d appended=%d",
+					newState.info.BaseIndex, newState.logs.Len(), e.Index)
+			}
 			newState.logs = newState.logs.Set(e.Index, e)
 		}
 		return nil
