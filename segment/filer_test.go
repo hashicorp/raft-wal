@@ -39,8 +39,7 @@ func TestSegmentBasics(t *testing.T) {
 
 	// Try to write a log that is not the base index
 	err = w.Append([]types.LogEntry{{Index: 2, Data: []byte("two")}})
-	require.Error(t, err)
-
+	require.ErrorContains(t, err, "non-monotonic append to segment with BaseIndex=1. Entry index 2, expected 1")
 	// Append to writer
 	err = w.Append([]types.LogEntry{{Index: 1, Data: []byte("one")}})
 	require.NoError(t, err)
@@ -63,7 +62,7 @@ func TestSegmentBasics(t *testing.T) {
 
 	// Try to write a log that is not the expected next index (which would be 2)
 	err = w.Append([]types.LogEntry{{Index: 10, Data: []byte("ten")}})
-	require.Error(t, err)
+	require.ErrorContains(t, err, "non-monotonic append to segment with BaseIndex=1. Entry index 10, expected 2")
 
 	expectVals := append([]string{}, "one")
 	// OK, now write some more.
