@@ -118,42 +118,6 @@ func (w *Writer) initEmpty() error {
 }
 
 func (w *Writer) recoverTail() error {
-	// First read the file header. Note we wrote it as part of the first commit so
-	// it may be missing or partial written and that's OK as long as there are no
-	// other later commit frames!
-	var fh [fileHeaderLen]byte
-	_, err := w.wf.ReadAt(fh[:], 0)
-	// EOF is ok - the file might be empty if we crashed before committing
-	// anything and preallocation isn't supported.
-	if err != io.EOF && err != nil {
-		return err
-	}
-
-	readInfo, err := readFileHeader(fh[:])
-	if err == types.ErrCorrupt {
-		// Header is malformed or missing, don't error yet though we'll detect it
-		// later when we know if it's a problem or not.
-		err = nil
-	}
-	if err != nil {
-		return err
-	}
-	// If header wasn't detected as corrupt, it might still be just in a way
-	// that's valid since we've not verified it against the expected metadata yet.
-	// We'll wait to see if the header was part of the last commit before decide
-	// if we should validate it for corruption or not though. For now just make
-	// sure it's not nil so we don't have to handle nil checks everywhere.
-	if readInfo == nil {
-		// Zero info will fail validation against the actual metadata if it was
-		// corrupt when it shouldn't be later. Just prevents a nil panic.
-		readInfo = &types.SegmentInfo{}
-	}
-
-	// Read through file from after header until we hit zeros, EOF or corrupt
-	// frames.
-	offset := int64(fileHeaderLen)
-	var buf [frameHeaderLen]byte
-
 	// We need to track the last two commit frames
 	type commitInfo struct {
 		fh         frameHeader
@@ -165,36 +129,8 @@ func (w *Writer) recoverTail() error {
 
 	offsets := make([]uint32, 0, 32*1024)
 
-READ:
-	for {
-		n, err := w.wf.ReadAt(buf[:], offset)
-		if err == io.EOF {
-			if n < frameHeaderLen {
-				break READ
-			}
-			// This is OK! The last frame in file might be a commit frame so as long
-			// as we have it all then we can ignore the EOF for this iteration.
-			err = nil
-		}
-		if err != nil {
-			return fmt.Errorf("failed reading frame at offset=%d: %w", offset, err)
-		}
-		fh, err := readFrameHeader(buf[:frameHeaderLen])
-		if err != nil {
-			// This is not actually an error case. If we failed to decode it could be
-			// because of a torn write (since we don't assume writes are atomic). We
-			// assume that previously committed data is not silently corrupted by the
-			// FS (see README for details). So this must be due to corruption that
-			// happened due to non-atomic sector updates whilst committing the last
-			// write batch.
-			break READ
-		}
+	readInfo, err := readThroughSegment(w.wf, func(_ types.SegmentInfo, fh frameHeader, offset int64) (bool, error) {
 		switch fh.typ {
-		case FrameInvalid:
-			// This means we've hit zeros at the end of the file (or due to an
-			// incomplete write, which we treat the same way).
-			break READ
-
 		case FrameEntry:
 			// Record the frame offset
 			offsets = append(offsets, uint32(offset))
@@ -218,9 +154,10 @@ READ:
 				finalCommit.crcStart = prevCommit.offset + frameHeaderLen
 			}
 		}
-
-		// Skip to next frame
-		offset += int64(encodedFrameSize(int(fh.len)))
+		return true, nil
+	})
+	if err != nil {
+		return err
 	}
 
 	if finalCommit == nil {
@@ -535,4 +472,84 @@ func (w *Writer) Sealed() (bool, uint64, error) {
 // atomic int. If the segment is empty lastIndex should return zero.
 func (w *Writer) LastIndex() uint64 {
 	return atomic.LoadUint64(&w.commitIdx)
+}
+
+func readThroughSegment(r types.ReadableFile, fn func(info types.SegmentInfo, fh frameHeader, offset int64) (bool, error)) (*types.SegmentInfo, error) {
+	// First read the file header. Note we wrote it as part of the first commit so
+	// it may be missing or partial written and that's OK as long as there are no
+	// other later commit frames!
+	var fh [fileHeaderLen]byte
+	_, err := r.ReadAt(fh[:], 0)
+	// EOF is ok - the file might be empty if we crashed before committing
+	// anything and preallocation isn't supported.
+	if err != io.EOF && err != nil {
+		return nil, err
+	}
+
+	readInfo, err := readFileHeader(fh[:])
+	if err == types.ErrCorrupt {
+		// Header is malformed or missing, don't error yet though we'll detect it
+		// later when we know if it's a problem or not.
+		err = nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	// If header wasn't detected as corrupt, it might still be just in a way
+	// that's valid since we've not verified it against the expected metadata yet.
+	// We'll wait to see if the header was part of the last commit before decide
+	// if we should validate it for corruption or not though. For now just make
+	// sure it's not nil so we don't have to handle nil checks everywhere.
+	if readInfo == nil {
+		// Zero info will fail validation against the actual metadata if it was
+		// corrupt when it shouldn't be later. Just prevents a nil panic.
+		readInfo = &types.SegmentInfo{}
+	}
+
+	// Read through file from after header until we hit zeros, EOF or corrupt
+	// frames.
+	offset := int64(fileHeaderLen)
+	var buf [frameHeaderLen]byte
+
+	for {
+		n, err := r.ReadAt(buf[:], offset)
+		if err == io.EOF {
+			if n < frameHeaderLen {
+				return readInfo, nil
+			}
+			// This is OK! The last frame in file might be a commit frame so as long
+			// as we have it all then we can ignore the EOF for this iteration.
+			err = nil
+		}
+		if err != nil {
+			return readInfo, fmt.Errorf("failed reading frame at offset=%d: %w", offset, err)
+		}
+		fh, err := readFrameHeader(buf[:frameHeaderLen])
+		if err != nil {
+			// This is not actually an error case. If we failed to decode it could be
+			// because of a torn write (since we don't assume writes are atomic). We
+			// assume that previously committed data is not silently corrupted by the
+			// FS (see README for details). So this must be due to corruption that
+			// happened due to non-atomic sector updates whilst committing the last
+			// write batch.
+			return readInfo, nil
+		}
+		if fh.typ == FrameInvalid {
+			// This means we've hit zeros at the end of the file (or due to an
+			// incomplete write, which we treat the same way).
+			return readInfo, nil
+		}
+
+		// Call the callback
+		shouldContinue, err := fn(*readInfo, fh, offset)
+		if err != nil {
+			return readInfo, err
+		}
+		if !shouldContinue {
+			return readInfo, nil
+		}
+
+		// Skip to next frame
+		offset += int64(encodedFrameSize(int(fh.len)))
+	}
 }
