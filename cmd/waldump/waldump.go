@@ -31,7 +31,7 @@ func main() {
 	// Accept dir as positional arg
 	o.Dir = flag.Arg(0)
 	if o.Dir == "" {
-		fmt.Println("Usage: waldump <path to WAL dir> [-after INDEX] [-before INDEX]")
+		fmt.Println("Usage: waldump [-after INDEX] [-before INDEX] <path to WAL dir>")
 		os.Exit(1)
 	}
 

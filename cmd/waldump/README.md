@@ -6,7 +6,7 @@ debugging.
 ## Usage
 
 ```
-$ waldump /path/to/wal/dir [-after INDEX] [-before INDEX]
+$ waldump [-after INDEX] [-before INDEX] /path/to/wal/dir
 ...
 {"Index":227281,"Term":4,"Type":0,"Data":"hpGEpUNvb3JkhKpBZGp1c3RtZW50yz7pEPrkTc4tpUVycm9yyz/B4NJg87MZpkhlaWdodMs/ABkEWHeDZqNWZWOYyz8FyF63P/XOyz8Fe2fyqYpayz7eXgvdsOWVyz7xX/ARy9MByz7XZq0fmx5eyz7x8ic7zxhJy78EgvusSgKUy77xVfw2sEr5pE5vZGWiczGpUGFydGl0aW9uoKdTZWdtZW50oA==","Extensions":null,"AppendedAt":"2023-03-23T12:24:05.440317Z"}
 ...
