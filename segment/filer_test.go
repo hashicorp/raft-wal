@@ -520,3 +520,184 @@ func testSegment(baseIndex uint64) types.SegmentInfo {
 		// Other fields don't really matter at segment level for now.
 	}
 }
+
+func TestDumpSegment(t *testing.T) {
+	vfs := newTestVFS()
+
+	f := NewFiler("test", vfs)
+
+	// Create one sealed segments
+	idx := uint64(1)
+	seg1 := testSegment(idx)
+	w, err := f.Create(seg1)
+	require.NoError(t, err)
+
+	var sealed bool
+	for sealed == false {
+		val := fmt.Sprintf("%05d. Some Value.", idx)
+		err = w.Append([]types.LogEntry{{Index: idx, Data: []byte(val)}})
+		require.NoError(t, err)
+
+		sealed, _, err = w.Sealed()
+		require.NoError(t, err)
+		idx++
+	}
+	w.Close()
+
+	// And one tail
+	seg2 := testSegment(idx)
+	w, err = f.Create(seg2)
+	require.NoError(t, err)
+	err = w.Append([]types.LogEntry{{Index: idx, Data: []byte("tail")}})
+	require.NoError(t, err)
+	idx++
+	defer w.Close()
+
+	// Now dump and make sure we see all the entries
+	lastDumpedIdx := uint64(0)
+	totalDumped := 0
+	err = f.DumpSegment(seg1.BaseIndex, seg1.ID, 0, 0, func(info types.SegmentInfo, e types.LogEntry) (bool, error) {
+		require.Equal(t, seg1.BaseIndex, info.BaseIndex)
+		require.Equal(t, seg1.ID, info.ID)
+		require.Equal(t, seg1.Codec, info.Codec)
+		require.Equal(t, lastDumpedIdx+1, e.Index)
+		require.Equal(t, fmt.Sprintf("%05d. Some Value.", e.Index), string(e.Data))
+		totalDumped++
+		lastDumpedIdx = e.Index
+		return true, nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, 93, totalDumped)
+
+	err = f.DumpSegment(seg2.BaseIndex, seg2.ID, 0, 0, func(info types.SegmentInfo, e types.LogEntry) (bool, error) {
+		require.Equal(t, seg2.BaseIndex, info.BaseIndex)
+		require.Equal(t, seg2.ID, info.ID)
+		require.Equal(t, seg2.Codec, info.Codec)
+		require.Equal(t, lastDumpedIdx+1, e.Index)
+		require.Equal(t, "tail", string(e.Data))
+		totalDumped++
+		lastDumpedIdx = idx
+		return true, nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, 94, totalDumped)
+
+	// Ensure if we ask to stop that we stop
+	totalDumped = 0
+	err = f.DumpSegment(seg1.BaseIndex, seg1.ID, 0, 0, func(info types.SegmentInfo, e types.LogEntry) (bool, error) {
+		totalDumped++
+		return false, nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, totalDumped)
+
+	// Ensure if we error it is passed back
+	totalDumped = 0
+	err = f.DumpSegment(seg1.BaseIndex, seg1.ID, 0, 0, func(info types.SegmentInfo, e types.LogEntry) (bool, error) {
+		totalDumped++
+		return true, fmt.Errorf("bad")
+	})
+	require.ErrorContains(t, err, "bad")
+	require.Equal(t, 1, totalDumped)
+
+	// Ensure reading from a tail with uncommitted appends doesn't return those
+
+	// First we write a new batch to the tail (because the last batch inluded the
+	// file header). The entry is 8 bytes long to keep padding simple.
+	err = w.Append([]types.LogEntry{{Index: idx, Data: []byte("12345678")}})
+	require.NoError(t, err)
+
+	// Now we twiddle the underlying VFS to zero out the commit frame.
+	// lastSyncState will point to the offset just before the new record and the
+	// commit frame will be just after.
+	file := testFileFor(t, w)
+	_, err = file.WriteAt(bytes.Repeat([]byte{0}, 1024), int64(file.lastSyncStart+encodedFrameSize(8)))
+	require.NoError(t, err)
+
+	// Now dumping should only return one entry
+	totalDumped = 0
+	err = f.DumpSegment(seg2.BaseIndex, seg2.ID, 0, 0, func(info types.SegmentInfo, e types.LogEntry) (bool, error) {
+		require.Equal(t, "tail", string(e.Data))
+		totalDumped++
+		return true, nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, totalDumped)
+}
+
+func TestDumpLogs(t *testing.T) {
+	vfs := newTestVFS()
+
+	f := NewFiler("test", vfs)
+
+	// Create three sealed segments
+	idx := uint64(1)
+	expectSegments := make([]types.SegmentInfo, 0, 3)
+	for i := 0; i < 3; i++ {
+		seg := testSegment(idx)
+		w, err := f.Create(seg)
+		require.NoError(t, err)
+		expectSegments = append(expectSegments, seg)
+
+		var sealed bool
+		for sealed == false {
+			val := fmt.Sprintf("%05d. Some Value.", idx)
+			err = w.Append([]types.LogEntry{{Index: idx, Data: []byte(val)}})
+			require.NoError(t, err)
+
+			sealed, _, err = w.Sealed()
+			require.NoError(t, err)
+			idx++
+		}
+		w.Close()
+	}
+
+	// And one tail
+	seg := testSegment(idx)
+	w, err := f.Create(seg)
+	require.NoError(t, err)
+	expectSegments = append(expectSegments, seg)
+	val := fmt.Sprintf("%05d. Some Value.", idx)
+	err = w.Append([]types.LogEntry{{Index: idx, Data: []byte(val)}})
+	require.NoError(t, err)
+	w.Close()
+
+	// Dump everything
+	totalDumped := 0
+	lastDumpedIndex := uint64(0)
+	lastSegID := -1
+	segIndex := -1
+
+	verifyFn := func(info types.SegmentInfo, e types.LogEntry) (bool, error) {
+		require.Equal(t, lastDumpedIndex+1, e.Index)
+		if info.ID != uint64(lastSegID) {
+			// This is a new segment, move to the next info
+			segIndex++
+		}
+		expectInfo := expectSegments[segIndex]
+		require.Equal(t, expectInfo.BaseIndex, info.BaseIndex)
+		require.Equal(t, expectInfo.ID, info.ID)
+		require.Equal(t, expectInfo.Codec, info.Codec)
+
+		require.Equal(t, fmt.Sprintf("%05d. Some Value.", e.Index), string(e.Data))
+
+		lastDumpedIndex = e.Index
+		lastSegID = int(info.ID)
+		totalDumped++
+		return true, nil
+	}
+
+	err = f.DumpLogs(0, 0, verifyFn)
+	require.NoError(t, err)
+	require.Equal(t, int(idx), totalDumped)
+
+	// Test limiting the range (the code above appends 280 records currently)
+	totalDumped = 0
+	lastDumpedIndex = 150 // We are dumping _after_ 150
+	lastSegID = -1
+	segIndex = 0 // 151 is in the second segment (index 1) so start from the index before
+
+	err = f.DumpLogs(150, 250, verifyFn)
+	require.NoError(t, err)
+	require.Equal(t, int(250-150-1), totalDumped)
+}
