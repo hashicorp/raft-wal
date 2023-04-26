@@ -889,45 +889,47 @@ func (w *WAL) checkClosed() error {
 // reads and writes should be stopped before calling this to avoid propagating
 // errors to users during shutdown but it's safe from a data-race perspective.
 func (w *WAL) Close() error {
-	// Only close once
-	old := atomic.SwapUint32(&w.closed, 1)
-	if old == 0 {
-		// Wait for writes
-		w.writeMu.Lock()
-		defer w.writeMu.Unlock()
-
-		// It doesn't matter if there is a rotation scheduled because runRotate will
-		// exist when it sees we are closed anyway.
-		w.awaitRotate = nil
-		// Awake and terminate the runRotate
-		close(w.triggerRotate)
-
-		// Replace state with nil state
-		s := w.loadState()
-		s.acquire()
-		defer s.release()
-
-		w.s.Store(&state{})
-
-		// Old state might be still in use by readers, attach closers to all open
-		// segment files.
-		toClose := make([]io.Closer, 0, s.segments.Len())
-		it := s.segments.Iterator()
-		for !it.Done() {
-			_, seg, _ := it.Next()
-			if seg.r != nil {
-				toClose = append(toClose, seg.r)
-			}
-		}
-		// Store finalizer to run once all readers are done. There can't be an
-		// existing finalizer since this was the active state read under a write
-		// lock and finalizers are only set on states that have been replaced under
-		// that same lock.
-		s.finalizer.Store(func() {
-			w.closeSegments(toClose)
-		})
+	if old := atomic.SwapUint32(&w.closed, 1); old != 0 {
+		// Only close once
+		return nil
 	}
-	return nil
+
+	// Wait for writes
+	w.writeMu.Lock()
+	defer w.writeMu.Unlock()
+
+	// It doesn't matter if there is a rotation scheduled because runRotate will
+	// exist when it sees we are closed anyway.
+	w.awaitRotate = nil
+	// Awake and terminate the runRotate
+	close(w.triggerRotate)
+
+	// Replace state with nil state
+	s := w.loadState()
+	s.acquire()
+	defer s.release()
+
+	w.s.Store(&state{})
+
+	// Old state might be still in use by readers, attach closers to all open
+	// segment files.
+	toClose := make([]io.Closer, 0, s.segments.Len())
+	it := s.segments.Iterator()
+	for !it.Done() {
+		_, seg, _ := it.Next()
+		if seg.r != nil {
+			toClose = append(toClose, seg.r)
+		}
+	}
+	// Store finalizer to run once all readers are done. There can't be an
+	// existing finalizer since this was the active state read under a write
+	// lock and finalizers are only set on states that have been replaced under
+	// that same lock.
+	s.finalizer.Store(func() {
+		w.closeSegments(toClose)
+	})
+
+	return w.metaDB.Close()
 }
 
 // IsMonotonic implements raft.MonotonicLogStore and informs the raft library
