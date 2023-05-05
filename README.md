@@ -103,14 +103,14 @@ type PersistentState struct {
 	Segments      []SegmentInfo
 }
 type SegmentInfo struct {
-  ID         uint64
-  BaseIndex  uint64
-  MinIndex   uint64
-  MaxIndex   uint64
-  Codec      uint64
-  IndexStart uint64
-  CreateTime time.Time
-  SealTime   time.Time
+	ID         uint64
+	BaseIndex  uint64
+	MinIndex   uint64
+	MaxIndex   uint64
+	Codec      uint64
+	IndexStart uint64
+	CreateTime time.Time
+	SealTime   time.Time
 }
 ```
 
@@ -153,13 +153,13 @@ first comitted entries.
 ```
 0      1      2      3      4      5      6      7      8
 +------+------+------+------+------+------+------+------+
-| Magic                     | Reserved           | Vsn  |
+|            Magic          |   Reserved  | Vsn  |
 +------+------+------+------+------+------+------+------+
-| BaseIndex                                             |
+|                       BaseIndex                       |
 +------+------+------+------+------+------+------+------+
-| SegmentID                                             |
+|                       SegmentID                       |
 +------+------+------+------+------+------+------+------+
-| Codec                                                 |
+|                        Codec                          |
 +------+------+------+------+------+------+------+------+
 ```
 
@@ -187,7 +187,7 @@ an 8-byte header.
 ```
 0      1      2      3      4      5      6      7      8
 +------+------+------+------+------+------+------+------+
-| Type | Reserved           | Length/CRC                |
+| Type |       Reserved     |       Length/CRC          |
 +------+------+------+------+------+------+------+------+
 ```
 
