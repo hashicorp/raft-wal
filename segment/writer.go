@@ -257,6 +257,26 @@ func (w *Writer) Append(entries []types.LogEntry) error {
 		return types.ErrSealed
 	}
 
+	flushed := false
+
+	// Save any state we may need to rollback.
+	beforeBuf := w.writer.commitBuf
+	beforeCRC := w.writer.crc
+	beforeIndexStart := w.writer.indexStart
+	beforeWriteOffset := w.writer.writeOffset
+	beforeOffsets := w.offsets.Load()
+
+	defer func() {
+		if !flushed {
+			// rollback writer state on error
+			w.writer.commitBuf = beforeBuf
+			w.writer.crc = beforeCRC
+			w.writer.indexStart = beforeIndexStart
+			w.writer.writeOffset = beforeWriteOffset
+			w.offsets.Store(beforeOffsets)
+		}
+	}()
+
 	// Iterate entries and append each one
 	for _, e := range entries {
 		if err := w.appendEntry(e); err != nil {
@@ -277,6 +297,8 @@ func (w *Writer) Append(entries []types.LogEntry) error {
 	if err := w.appendCommit(); err != nil {
 		return err
 	}
+
+	flushed = true
 
 	// Commit in-memory
 	atomic.StoreUint64(&w.commitIdx, entries[len(entries)-1].Index)

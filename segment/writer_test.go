@@ -4,6 +4,7 @@
 package segment
 
 import (
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -116,4 +117,117 @@ func TestConcurrentReadersAndWriter(t *testing.T) {
 	require.Greater(t, int(atomic.LoadUint64(&lastIndexWritten)), 1000)
 	require.Greater(t, int(atomic.LoadUint64(&numReads)), 1000)
 	require.Greater(t, int(atomic.LoadUint64(&sealedMaxIndex)), 1000)
+}
+
+func TestWriterRecoversFromWriteFailure(t *testing.T) {
+	cases := []struct {
+		name         string
+		setupFailure func(f *testWritableFile, batch []types.LogEntry)
+		fixFailure   func(batch []types.LogEntry)
+	}{
+		{
+			name: "fwrite failure",
+			setupFailure: func(f *testWritableFile, batch []types.LogEntry) {
+				f.failNextWrite()
+			},
+		},
+		{
+			name: "fsync failure",
+			setupFailure: func(f *testWritableFile, batch []types.LogEntry) {
+				f.failNextSync()
+			},
+		},
+		{
+			name: "log append failure",
+			setupFailure: func(f *testWritableFile, batch []types.LogEntry) {
+				// Should cause monotonicity check to fail but only on last log after
+				// other logs have been written and internal state updated.
+				batch[len(batch)-1].Index = 123456
+			},
+			fixFailure: func(batch []types.LogEntry) {
+				batch[len(batch)-1].Index = batch[len(batch)-2].Index + 1
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+
+		testFn := func(t *testing.T, empty bool) {
+			vfs := newTestVFS()
+
+			f := NewFiler("test", vfs)
+
+			seg0 := testSegment(1)
+
+			w, err := f.Create(seg0)
+			require.NoError(t, err)
+			defer w.Close()
+
+			batch := make([]types.LogEntry, 5)
+			for i := range batch {
+				batch[i].Index = uint64(i + 1)
+				batch[i].Data = []byte(fmt.Sprintf("val-%d", i+1))
+			}
+			maxIdx := len(batch)
+			expectFirstIdx := 0
+			expectLastIdx := 0
+
+			if !empty {
+				require.NoError(t, w.Append(batch))
+				expectFirstIdx = 1
+				expectLastIdx = maxIdx
+				for i := range batch {
+					batch[i].Index = uint64(i + maxIdx + 1)
+					batch[i].Data = []byte(fmt.Sprintf("val-%d", i+maxIdx+1))
+				}
+			}
+
+			tf := testFileFor(t, w)
+
+			tc.setupFailure(tf, batch)
+
+			require.Error(t, w.Append(batch))
+			assertExpectedLogs(t, w, expectFirstIdx, expectLastIdx)
+
+			if tc.fixFailure != nil {
+				tc.fixFailure(batch)
+			}
+
+			// Now retry that write, it should work!
+			expectFirstIdx = 1
+			expectLastIdx = int(batch[4].Index)
+			require.NoError(t, w.Append(batch))
+			assertExpectedLogs(t, w, expectFirstIdx, expectLastIdx)
+
+			// Also, re-open the file "from disk" to make sure what has been written
+			// is correct and recoverable!
+			w2, err := f.RecoverTail(seg0)
+			require.NoError(t, err)
+			assertExpectedLogs(t, w2, expectFirstIdx, expectLastIdx)
+			w2.Close()
+		}
+
+		t.Run(tc.name+" empty", func(t *testing.T) {
+			testFn(t, true)
+		})
+		t.Run(tc.name+" non-empty", func(t *testing.T) {
+			testFn(t, false)
+		})
+	}
+}
+
+func assertExpectedLogs(t *testing.T, w types.SegmentWriter, first, last int) {
+	t.Helper()
+
+	require.Equal(t, uint64(last), w.LastIndex())
+	if last == 0 {
+		return
+	}
+	for idx := first; idx <= last; idx++ {
+		buf, err := w.GetLog(uint64(idx))
+		require.NoError(t, err)
+		require.Equal(t, fmt.Sprintf("val-%d", idx), string(buf.Bs))
+		buf.Close()
+	}
 }

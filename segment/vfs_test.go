@@ -6,6 +6,7 @@ package segment
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -162,6 +163,8 @@ type testWritableFile struct {
 	maxWritten    int
 	lastSyncStart int
 	closed, dirty bool
+	writeErr      error
+	syncErr       error
 }
 
 func newTestWritableFile(size int) *testWritableFile {
@@ -172,6 +175,14 @@ func newTestWritableFile(size int) *testWritableFile {
 
 func (f *testWritableFile) getBuf() []byte {
 	return f.buf.Load().([]byte)
+}
+
+func (f *testWritableFile) failNextWrite() {
+	f.writeErr = errors.New("IO error")
+}
+
+func (f *testWritableFile) failNextSync() {
+	f.syncErr = errors.New("IO error")
 }
 
 // Truncate allows us to simulate the file being a different length to expected
@@ -207,6 +218,11 @@ func (f *testWritableFile) Dump() string {
 }
 
 func (f *testWritableFile) WriteAt(p []byte, off int64) (n int, err error) {
+	if f.writeErr != nil {
+		err := f.writeErr
+		f.writeErr = nil
+		return 0, err
+	}
 	if !f.dirty {
 		f.lastSyncStart = int(off)
 	}
@@ -268,6 +284,11 @@ func (f *testWritableFile) Close() error {
 }
 
 func (f *testWritableFile) Sync() error {
+	if f.syncErr != nil {
+		err := f.syncErr
+		f.syncErr = nil
+		return err
+	}
 	f.dirty = false
 	return nil
 }
