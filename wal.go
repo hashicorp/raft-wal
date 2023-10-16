@@ -840,8 +840,8 @@ func (w *WAL) truncateTailLocked(newMax uint64) error {
 				if err != nil {
 					return nil, nil, err
 				}
-				tail.SealTime = time.Now()
 				tail.IndexStart = indexStart
+				tail.SealTime = time.Now()
 				maxIdx = newState.lastIndex()
 			}
 			// Update the MaxIndex

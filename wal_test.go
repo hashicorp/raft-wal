@@ -198,6 +198,8 @@ func TestWALOpen(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			ts, w, err := testOpenWAL(t, tc.tsOpts, tc.walOpts, tc.ignoreInvalidMeta)
 
 			// Error or not we should never commit an invalid set of segments to meta.
@@ -371,6 +373,8 @@ func TestStoreLogs(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			ts, w, err := testOpenWAL(t, tc.tsOpts, tc.walOpts, false)
 			require.NoError(t, err)
 
@@ -627,6 +631,8 @@ func TestDeleteRange(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			opts := tc.walOpts
 
 			// add our own metrics counter
