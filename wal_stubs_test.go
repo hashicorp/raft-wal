@@ -70,6 +70,7 @@ func segFull() testStorageOpt {
 		// Seal "full" segments
 		seg.mutate(func(newState *testSegmentState) error {
 			newState.info.SealTime = time.Now()
+			newState.info.IndexStart = 12345
 			newState.info.MaxIndex = newState.info.BaseIndex + uint64(len(es)) - 1
 			return nil
 		})
@@ -289,7 +290,7 @@ func (ts *testStorage) assertValidMetaState(t *testing.T) {
 		isTail := (i == n-1)
 
 		if isTail && !seg.SealTime.IsZero() {
-			t.Fatalf("final segment in committed state is not sealed")
+			t.Fatalf("final segment in committed state is sealed")
 		}
 		if !isTail && seg.SealTime.IsZero() {
 			t.Fatalf("unsealed segment not at tail in committed state")
@@ -310,17 +311,18 @@ func (ts *testStorage) assertValidMetaState(t *testing.T) {
 			}
 
 			// Verify that if it's meant to be sealed in metadata that it actually is
-			// and has an index block.
-			sealed, idxStart, err := ts.Sealed()
-			require.NoError(t, err)
-			if isTail {
-				require.False(t, sealed)
-				require.Equal(t, 0, int(idxStart))
-			} else {
+			// and has an index block. Note that we don't test that the actual segment
+			// sealed status matches meta since that is not always true e.g. just
+			// after an append that caused segment to seal but before the rotate has
+			// updated metadata. The thing we need to ensure is that if metadata says
+			// it's sealed that the actual segment is actually sealed and has an index
+			// block.
+			if !seg.SealTime.IsZero() {
+				sealed, indexStart, err := ts.Sealed()
+				require.NoError(t, err)
 				require.True(t, sealed)
-				require.Greater(t, int(idxStart), 0)
+				require.NotEqual(t, 0, int(indexStart))
 			}
-
 		}
 	}
 }
@@ -605,9 +607,6 @@ func (s *testSegment) ForceSeal() (uint64, error) {
 	err := s.mutate(func(newState *testSegmentState) error {
 		if newState.closed {
 			return errors.New("closed")
-		}
-		if newState.indexStart > 0 {
-			return errors.New("already sealed")
 		}
 		newState.indexStart = 12345
 		return nil

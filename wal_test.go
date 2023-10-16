@@ -397,7 +397,7 @@ func TestStoreLogs(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, int(tc.expectLastIndex), int(last))
 
-			// Check all the internal meta/segment state meets our invariants
+			// Check all the internal meta/segment state meets our invariants.
 			ts.assertValidMetaState(t)
 
 			// Check all log entries exist that are meant to
