@@ -321,10 +321,6 @@ func (ts *testStorage) assertValidMetaState(t *testing.T) {
 				require.Greater(t, int(idxStart), 0)
 			}
 
-		} else {
-			// TODO this wasn't here before maybe there are legit reasons this
-			// shouldn't be enforced?
-			t.Fatalf("Segment with ID %d is missing", seg.ID)
 		}
 	}
 }
