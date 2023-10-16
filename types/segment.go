@@ -104,7 +104,8 @@ type SegmentWriter interface {
 
 	// Append adds one or more entries. It must not return until the entries are
 	// durably stored otherwise raft's guarantees will be compromised. Append must
-	// not be called concurrently with any other call to Sealed or Append.
+	// not be called concurrently with any other call to Sealed, Append or
+	// ForceSeal.
 	Append(entries []LogEntry) error
 
 	// Sealed returns whether the segment is sealed or not. If it is it returns
@@ -112,9 +113,22 @@ type SegmentWriter interface {
 	// meta data. WAL will call this after every append so it should be relatively
 	// cheap in the common case. This design allows the final Append to write out
 	// the index or any additional data needed at seal time in the same fsync.
-	// Sealed must not be called concurrently with any other call to Sealed or
-	// Append.
+	// Sealed must not be called concurrently with any other call to Sealed,
+	// Append or ForceSeal.
 	Sealed() (bool, uint64, error)
+
+	// ForceSeal causes the segment to become sealed by writing out an index
+	// block. This is not used in the typical flow of append and rotation, but is
+	// necessary during truncations where some suffix of the writer needs to be
+	// truncated. Rather than manipulate what is on disk in a complex way, the WAL
+	// will simply force seal it with whatever state it has already saved and then
+	// open a new segment at the right offset for continued writing. ForceSeal may
+	// be called on a segment that has already been sealed and should just return
+	// the existing index offset in that case. (We don't actually rely on that
+	// currently but it's easier not to assume we'll always call it at most once).
+	// ForceSeal must not be called concurrently with any other call to Sealed,
+	// Append or ForceSeal.
+	ForceSeal() (uint64, error)
 
 	// LastIndex returns the most recently persisted index in the log. It must
 	// respond without blocking on Append since it's needed frequently by read

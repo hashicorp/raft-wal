@@ -692,6 +692,9 @@ func TestDeleteRange(t *testing.T) {
 			require.Equal(t, int(nextIdx), int(log.Index))
 			validateLogEntry(t, &log)
 
+			// Verify all segment state is consistent with metadata
+			ts.assertValidMetaState(t)
+
 			// Verify the metrics recorded what we expected!
 			metrics := m.Summary()
 			require.Equal(t, int(tc.expectNTailTruncations), int(metrics.Counters["tail_truncations"]))

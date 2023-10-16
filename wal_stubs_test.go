@@ -26,6 +26,12 @@ func testOpenWAL(t *testing.T, tsOpts []testStorageOpt, walOpts []walOpt, allowI
 	t.Helper()
 
 	ts := makeTestStorage(tsOpts...)
+	w, err := testOpenWALWithStorage(t, ts, walOpts, allowInvalidMeta)
+	return ts, w, err
+}
+
+func testOpenWALWithStorage(t *testing.T, ts *testStorage, walOpts []walOpt, allowInvalidMeta bool) (*WAL, error) {
+	t.Helper()
 
 	// Make sure "persisted" state is setup in a valid way
 	sort.Slice(ts.metaState.Segments, func(i, j int) bool {
@@ -41,7 +47,7 @@ func testOpenWAL(t *testing.T, tsOpts []testStorageOpt, walOpts []walOpt, allowI
 
 	opts := append(walOpts, stubStorage(ts))
 	w, err := Open("test", opts...)
-	return ts, w, err
+	return w, err
 }
 
 type testStorageOpt func(ts *testStorage)
@@ -302,6 +308,23 @@ func (ts *testStorage) assertValidMetaState(t *testing.T) {
 				require.True(t, ok)
 				require.Equal(t, seg.BaseIndex, log.Index)
 			}
+
+			// Verify that if it's meant to be sealed in metadata that it actually is
+			// and has an index block.
+			sealed, idxStart, err := ts.Sealed()
+			require.NoError(t, err)
+			if isTail {
+				require.False(t, sealed)
+				require.Equal(t, 0, int(idxStart))
+			} else {
+				require.True(t, sealed)
+				require.Greater(t, int(idxStart), 0)
+			}
+
+		} else {
+			// TODO this wasn't here before maybe there are legit reasons this
+			// shouldn't be enforced?
+			t.Fatalf("Segment with ID %d is missing", seg.ID)
 		}
 	}
 }
@@ -330,7 +353,7 @@ func (ts *testStorage) CommitState(ps types.PersistentState) error {
 	ts.metaState = ps
 
 	// For the sake of not being super confusing, lets also update all the
-	//types.SegmentInfos in the testSegments e.g. if Min/Max were set due to a
+	// types.SegmentInfos in the testSegments e.g. if Min/Max were set due to a
 	// truncation or the segment was sealed.
 	for _, seg := range ps.Segments {
 		ts, ok := ts.segments[seg.ID]
@@ -483,7 +506,6 @@ func (ts *testStorage) assertAllClosed(t *testing.T, wantClosed bool) {
 			require.True(t, closed, "segment with BaseIndex=%d was not closed", s.info().BaseIndex)
 		} else {
 			require.False(t, closed, "segment with BaseIndex=%d was closed", s.info().BaseIndex)
-
 		}
 	}
 }
@@ -499,9 +521,10 @@ type testSegment struct {
 }
 
 type testSegmentState struct {
-	info   types.SegmentInfo
-	logs   *immutable.SortedMap[uint64, types.LogEntry]
-	closed bool
+	info       types.SegmentInfo
+	logs       *immutable.SortedMap[uint64, types.LogEntry]
+	closed     bool
+	indexStart uint64
 }
 
 func (s *testSegment) loadState() testSegmentState {
@@ -566,6 +589,10 @@ func (s *testSegment) Append(entries []types.LogEntry) error {
 			}
 			newState.logs = newState.logs.Set(e.Index, e)
 		}
+		// Maybe seal
+		if newState.logs.Len() >= s.limit {
+			newState.indexStart = 12345
+		}
 		return nil
 	})
 }
@@ -575,7 +602,24 @@ func (s *testSegment) Sealed() (bool, uint64, error) {
 	if state.closed {
 		panic("sealed on closed segment")
 	}
-	return state.logs.Len() >= s.limit, 12345, nil
+	return state.indexStart > 0, state.indexStart, nil
+}
+
+func (s *testSegment) ForceSeal() (uint64, error) {
+	err := s.mutate(func(newState *testSegmentState) error {
+		if newState.closed {
+			return errors.New("closed")
+		}
+		if newState.indexStart > 0 {
+			return errors.New("already sealed")
+		}
+		newState.indexStart = 12345
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return 12345, nil
 }
 
 func (s *testSegment) LastIndex() uint64 {

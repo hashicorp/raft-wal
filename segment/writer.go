@@ -488,6 +488,11 @@ func (w *Writer) Sealed() (bool, uint64, error) {
 	return true, w.writer.indexStart, nil
 }
 
+func (w *Writer) ForceSeal() (uint64, error) {
+	panic("TODO")
+	return 0, nil
+}
+
 // LastIndex returns the most recently persisted index in the log. It must
 // respond without blocking on append since it's needed frequently by read
 // paths that may call it concurrently. Typically this will be loaded from an
