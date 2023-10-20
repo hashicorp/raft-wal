@@ -322,6 +322,7 @@ func (ts *testStorage) assertValidMetaState(t *testing.T) {
 				require.NoError(t, err)
 				require.True(t, sealed)
 				require.NotEqual(t, 0, int(indexStart))
+				require.Equal(t, indexStart, seg.IndexStart)
 			}
 		}
 	}
