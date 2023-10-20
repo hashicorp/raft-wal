@@ -198,6 +198,8 @@ func TestWALOpen(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			ts, w, err := testOpenWAL(t, tc.tsOpts, tc.walOpts, tc.ignoreInvalidMeta)
 
 			// Error or not we should never commit an invalid set of segments to meta.
@@ -371,6 +373,8 @@ func TestStoreLogs(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			ts, w, err := testOpenWAL(t, tc.tsOpts, tc.walOpts, false)
 			require.NoError(t, err)
 
@@ -397,7 +401,7 @@ func TestStoreLogs(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, int(tc.expectLastIndex), int(last))
 
-			// Check all the internal meta/segment state meets our invariants
+			// Check all the internal meta/segment state meets our invariants.
 			ts.assertValidMetaState(t)
 
 			// Check all log entries exist that are meant to
@@ -627,6 +631,8 @@ func TestDeleteRange(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			opts := tc.walOpts
 
 			// add our own metrics counter
@@ -691,6 +697,9 @@ func TestDeleteRange(t *testing.T) {
 			require.NoError(t, err, "failed to find appended log %d", nextIdx)
 			require.Equal(t, int(nextIdx), int(log.Index))
 			validateLogEntry(t, &log)
+
+			// Verify all segment state is consistent with metadata
+			ts.assertValidMetaState(t)
 
 			// Verify the metrics recorded what we expected!
 			metrics := m.Summary()

@@ -34,9 +34,11 @@ var (
 	DefaultSegmentSize = 64 * 1024 * 1024
 )
 
-var _ raft.LogStore = &WAL{}
-var _ raft.MonotonicLogStore = &WAL{}
-var _ raft.StableStore = &WAL{}
+var (
+	_ raft.LogStore          = &WAL{}
+	_ raft.MonotonicLogStore = &WAL{}
+	_ raft.StableStore       = &WAL{}
+)
 
 // WAL is a write-ahead log suitable for github.com/hashicorp/raft.
 type WAL struct {
@@ -364,14 +366,9 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 	w.writeMu.Lock()
 	defer w.writeMu.Unlock()
 
-	awaitCh := w.awaitRotate
-	if awaitCh != nil {
-		// We managed to race for writeMu with the background rotate operation which
-		// needs to complete first. Wait for it to complete.
-		w.writeMu.Unlock()
-		<-awaitCh
-		w.writeMu.Lock()
-	}
+	// Ensure queued rotation has completed before us if we raced with it for
+	// write lock.
+	w.awaitRotationLocked()
 
 	s, release := w.acquireState()
 	defer release()
@@ -450,6 +447,17 @@ func (w *WAL) StoreLogs(logs []*raft.Log) error {
 	return nil
 }
 
+func (w *WAL) awaitRotationLocked() {
+	awaitCh := w.awaitRotate
+	if awaitCh != nil {
+		// We managed to race for writeMu with the background rotate operation which
+		// needs to complete first. Wait for it to complete.
+		w.writeMu.Unlock()
+		<-awaitCh
+		w.writeMu.Lock()
+	}
+}
+
 // DeleteRange deletes a range of log entries. The range is inclusive.
 // Implements raft.LogStore. Note that we only support deleting ranges that are
 // a suffix or prefix of the log.
@@ -464,6 +472,10 @@ func (w *WAL) DeleteRange(min uint64, max uint64) error {
 
 	w.writeMu.Lock()
 	defer w.writeMu.Unlock()
+
+	// Ensure queued rotation has completed before us if we raced with it for
+	// write lock.
+	w.awaitRotationLocked()
 
 	s, release := w.acquireState()
 	defer release()
@@ -812,7 +824,7 @@ func (w *WAL) truncateTailLocked(newMax uint64) error {
 			toDelete[seg.ID] = seg.BaseIndex
 			toClose = append(toClose, seg.r)
 			newState.segments = newState.segments.Delete(seg.BaseIndex)
-			nTruncated += (maxIdx - seg.MinIndex + 1) // +1 becuase MaxIndex is inclusive
+			nTruncated += (maxIdx - seg.MinIndex + 1) // +1 because MaxIndex is inclusive
 		}
 
 		tail := newState.getTailInfo()
@@ -822,11 +834,17 @@ func (w *WAL) truncateTailLocked(newMax uint64) error {
 			// Check that the tail is sealed (it won't be if we didn't need to remove
 			// the actual partial tail above).
 			if tail.SealTime.IsZero() {
+				// Actually seal it (i.e. force it to write out an index block wherever
+				// it got to).
+				indexStart, err := newState.tail.ForceSeal()
+				if err != nil {
+					return nil, nil, err
+				}
+				tail.IndexStart = indexStart
 				tail.SealTime = time.Now()
 				maxIdx = newState.lastIndex()
 			}
 			// Update the MaxIndex
-
 			nTruncated += (maxIdx - newMax)
 			tail.MaxIndex = newMax
 

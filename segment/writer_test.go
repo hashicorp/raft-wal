@@ -224,10 +224,55 @@ func assertExpectedLogs(t *testing.T, w types.SegmentWriter, first, last int) {
 	if last == 0 {
 		return
 	}
+	assertExpectedReaderLogs(t, w, first, last)
+}
+
+func assertExpectedReaderLogs(t *testing.T, r types.SegmentReader, first, last int) {
+	t.Helper()
+
 	for idx := first; idx <= last; idx++ {
-		buf, err := w.GetLog(uint64(idx))
+		buf, err := r.GetLog(uint64(idx))
 		require.NoError(t, err)
 		require.Equal(t, fmt.Sprintf("val-%d", idx), string(buf.Bs))
 		buf.Close()
 	}
+}
+
+func TestWriterForceSeal(t *testing.T) {
+	vfs := newTestVFS()
+
+	f := NewFiler("test", vfs)
+
+	seg0 := testSegment(1)
+
+	w, err := f.Create(seg0)
+	require.NoError(t, err)
+	defer w.Close()
+
+	batch := make([]types.LogEntry, 5)
+	for i := range batch {
+		batch[i].Index = uint64(i + 1)
+		batch[i].Data = []byte(fmt.Sprintf("val-%d", i+1))
+	}
+	require.NoError(t, w.Append(batch))
+
+	assertExpectedLogs(t, w, 1, 5)
+
+	// Should not have sealed after one append.
+	sealed, indexStart, err := w.Sealed()
+	require.NoError(t, err)
+	require.False(t, sealed)
+	require.Equal(t, 0, int(indexStart))
+
+	// Force seal it
+	indexStart, err = w.ForceSeal()
+	require.NoError(t, err)
+	require.Greater(t, int(indexStart), 0)
+
+	// It should be possible to open it with a reader now
+	seg0.IndexStart = indexStart
+	r, err := f.Open(seg0)
+	require.NoError(t, err)
+
+	assertExpectedReaderLogs(t, r, 1, 5)
 }

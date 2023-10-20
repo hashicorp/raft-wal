@@ -488,6 +488,28 @@ func (w *Writer) Sealed() (bool, uint64, error) {
 	return true, w.writer.indexStart, nil
 }
 
+// ForceSeal forces us to seal the segment by writing out an index block
+// wherever we got to in the file. After calling this it is no longer valid to
+// call Append on this file.
+func (w *Writer) ForceSeal() (uint64, error) {
+	if w.writer.indexStart > 0 {
+		// Already sealed, this is a no-op.
+		return w.writer.indexStart, nil
+	}
+
+	// Seal the segment! We seal it by writing an index frame before we commit.
+	if err := w.appendIndex(); err != nil {
+		return 0, err
+	}
+
+	// Write the commit frame
+	if err := w.appendCommit(); err != nil {
+		return 0, err
+	}
+
+	return w.writer.indexStart, nil
+}
+
 // LastIndex returns the most recently persisted index in the log. It must
 // respond without blocking on append since it's needed frequently by read
 // paths that may call it concurrently. Typically this will be loaded from an
