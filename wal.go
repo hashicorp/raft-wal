@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -349,10 +350,6 @@ func (w *WAL) GetLog(index uint64, log *raft.Log) error {
 	return w.codec.Decode(raw.Bs, log)
 }
 
-type ArchiverInterface interface {
-	GetSealedLogFiles(fromIndex uint64) ([]*SealedSegmentInfo, error)
-}
-
 type SealedSegmentInfo struct {
 	Path     string
 	LogCount uint64
@@ -382,12 +379,10 @@ func (w *WAL) GetSealedLogFiles(fromIndex uint64) ([]*SealedSegmentInfo, error) 
 	for !it.Done() {
 		_, seg, ok := it.Prev()
 		if !ok {
-			fmt.Println("break ", seg.BaseIndex, seg.MaxIndex, seg.IndexStart)
 			break
 		}
 		// if the segment sealTime is zero, it means that the segment has not been sealed yet
 		if seg.SealTime.IsZero() {
-			fmt.Println("Continue....segment unseal", seg.BaseIndex, seg.MinIndex)
 			continue
 		}
 
@@ -396,7 +391,7 @@ func (w *WAL) GetSealedLogFiles(fromIndex uint64) ([]*SealedSegmentInfo, error) 
 		// target index also include that.
 		if ok && seg.MinIndex >= fromIndex || seg.MaxIndex >= fromIndex {
 			sealedSegInfo = append(sealedSegInfo, &SealedSegmentInfo{
-				Path:     seg.FileName(),
+				Path:     filepath.Join(w.dir, seg.FileName()),
 				MinIndex: seg.MinIndex,
 				LogCount: (seg.MaxIndex - seg.MinIndex) + 1, // including the maxIndex
 			})
