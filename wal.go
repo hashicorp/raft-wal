@@ -350,10 +350,6 @@ func (w *WAL) GetLog(index uint64, log *raft.Log) error {
 	return w.codec.Decode(raw.Bs, log)
 }
 
-type ArchiverInterface interface {
-	GetSealedLogFiles(fromIndex uint64) ([]*SealedSegmentInfo, error)
-}
-
 type SealedSegmentInfo struct {
 	Path     string
 	LogCount uint64
