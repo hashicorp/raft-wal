@@ -44,7 +44,7 @@ func main() {
 
 	err := f.DumpLogs(o.After, o.Before, func(info types.SegmentInfo, e types.LogEntry) (bool, error) {
 		if info.Codec != wal.CodecBinaryV1 {
-			return false, fmt.Errorf("unsupported codec %d in file %s", info.Codec, segment.FileName(info))
+			return false, fmt.Errorf("unsupported codec %d in file %s", info.Codec, info.FileName())
 		}
 		if err := codec.Decode(e.Data, &log); err != nil {
 			return false, err

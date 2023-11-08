@@ -15,10 +15,12 @@ import (
 )
 
 func TestFileName(t *testing.T) {
-	fn := FileName(types.SegmentInfo{BaseIndex: 0, ID: 1})
+	testSeg := types.SegmentInfo{BaseIndex: 0, ID: 1}
+	fn := testSeg.FileName()
 	require.Equal(t, "00000000000000000000-0000000000000001.wal", fn)
 
-	fn = FileName(types.SegmentInfo{BaseIndex: 7394872394732, ID: 0xab1234cd4567ef})
+	testSeg = types.SegmentInfo{BaseIndex: 7394872394732, ID: 0xab1234cd4567ef}
+	fn = testSeg.FileName()
 	require.Equal(t, "00000007394872394732-00ab1234cd4567ef.wal", fn)
 }
 

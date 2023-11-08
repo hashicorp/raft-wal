@@ -4,9 +4,21 @@
 package types
 
 import (
+	"fmt"
 	"io"
 	"time"
 )
+
+const (
+	SegmentFileSuffix      = ".wal"
+	SegmentFileNamePattern = "%020d-%016x" + SegmentFileSuffix
+)
+
+// FileName returns the formatted file name expected for this segment.
+// SegmentFiler implementations could choose to ignore this but it's here to
+func (i SegmentInfo) FileName() string {
+	return fmt.Sprintf(SegmentFileNamePattern, i.BaseIndex, i.ID)
+}
 
 // SegmentInfo is the metadata describing a single WAL segment.
 type SegmentInfo struct {

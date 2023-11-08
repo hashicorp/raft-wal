@@ -349,6 +349,68 @@ func (w *WAL) GetLog(index uint64, log *raft.Log) error {
 	return w.codec.Decode(raw.Bs, log)
 }
 
+type ArchiverInterface interface {
+	GetSealedLogFiles(fromIndex uint64) ([]*SealedSegmentInfo, error)
+}
+
+type SealedSegmentInfo struct {
+	Path     string
+	LogCount uint64
+	MinIndex uint64
+}
+
+func (w *WAL) GetSealedLogFiles(fromIndex uint64) ([]*SealedSegmentInfo, error) {
+	// TODO unit test this.
+
+	if err := w.checkClosed(); err != nil {
+		return nil, err
+	}
+	s, release := w.acquireState()
+	defer release()
+
+	if s.segments.Len() == 0 {
+		return nil, ErrNotFound
+	}
+
+	// Get an iterator, move the cursor to the last one. Then, move backwards
+	// and append stuff to the returned sealed segments.
+	it := s.segments.Iterator()
+	it.Last()
+
+	sealedSegInfo := make([]*SealedSegmentInfo, 0)
+
+	for !it.Done() {
+		_, seg, ok := it.Prev()
+		if !ok {
+			fmt.Println("break ", seg.BaseIndex, seg.MaxIndex, seg.IndexStart)
+			break
+		}
+		// if the segment sealTime is zero, it means that the segment has not been sealed yet
+		if seg.SealTime.IsZero() {
+			fmt.Println("Continue....segment unseal", seg.BaseIndex, seg.MinIndex)
+			continue
+		}
+
+		// segment exists and the minIndex is greater than the target index,
+		// add it to the returned indexes. Or if a segments MaxIndex is greater than the
+		// target index also include that.
+		if ok && seg.MinIndex >= fromIndex || seg.MaxIndex >= fromIndex {
+			sealedSegInfo = append(sealedSegInfo, &SealedSegmentInfo{
+				Path:     seg.FileName(),
+				MinIndex: seg.MinIndex,
+				LogCount: (seg.MaxIndex - seg.MinIndex) + 1, // including the maxIndex
+			})
+		}
+		// no need to iterator to the first one if we have already included upto the segment
+		// which contains the fromIndex
+		if ok && seg.MinIndex <= fromIndex {
+			break
+		}
+	}
+
+	return sealedSegInfo, nil
+}
+
 // StoreLog stores a log entry.
 func (w *WAL) StoreLog(log *raft.Log) error {
 	return w.StoreLogs([]*raft.Log{log})

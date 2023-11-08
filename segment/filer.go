@@ -13,11 +13,6 @@ import (
 	"github.com/hashicorp/raft-wal/types"
 )
 
-const (
-	segmentFileSuffix      = ".wal"
-	segmentFileNamePattern = "%020d-%016x" + segmentFileSuffix
-)
-
 // Filer implements the abstraction for managing a set of segment files in a
 // directory. It uses a VFS to abstract actual file system operations for easier
 // testing.
@@ -39,19 +34,13 @@ func NewFiler(dir string, vfs types.VFS) *Filer {
 	return f
 }
 
-// FileName returns the formatted file name expected for this segment.
-// SegmentFiler implementations could choose to ignore this but it's here to
-func FileName(i types.SegmentInfo) string {
-	return fmt.Sprintf(segmentFileNamePattern, i.BaseIndex, i.ID)
-}
-
 // Create adds a new segment with the given info and returns a writer or an
 // error.
 func (f *Filer) Create(info types.SegmentInfo) (types.SegmentWriter, error) {
 	if info.BaseIndex == 0 {
 		return nil, fmt.Errorf("BaseIndex must be greater than zero")
 	}
-	fname := FileName(info)
+	fname := info.FileName()
 
 	wf, err := f.vfs.Create(f.dir, fname, uint64(info.SizeLimit))
 	if err != nil {
@@ -67,7 +56,7 @@ func (f *Filer) Create(info types.SegmentInfo) (types.SegmentWriter, error) {
 // expected tail segment doesn't exist it must return an error wrapping
 // os.ErrNotExist.
 func (f *Filer) RecoverTail(info types.SegmentInfo) (types.SegmentWriter, error) {
-	fname := FileName(info)
+	fname := info.FileName()
 
 	wf, err := f.vfs.OpenWriter(f.dir, fname)
 	if err != nil {
@@ -80,7 +69,7 @@ func (f *Filer) RecoverTail(info types.SegmentInfo) (types.SegmentWriter, error)
 // Open an already sealed segment for reading. Open may validate the file's
 // header and return an error if it doesn't match the expected info.
 func (f *Filer) Open(info types.SegmentInfo) (types.SegmentReader, error) {
-	fname := FileName(info)
+	fname := info.FileName()
 
 	rf, err := f.vfs.OpenReader(f.dir, fname)
 	if err != nil {
@@ -133,12 +122,12 @@ func (f *Filer) listInternal() (map[uint64]uint64, []uint64, error) {
 	segs := make(map[uint64]uint64)
 	sorted := make([]uint64, 0)
 	for _, file := range files {
-		if !strings.HasSuffix(file, segmentFileSuffix) {
+		if !strings.HasSuffix(file, types.SegmentFileSuffix) {
 			continue
 		}
 		// Parse BaseIndex and ID from the file name
 		var bIdx, id uint64
-		n, err := fmt.Sscanf(file, segmentFileNamePattern, &bIdx, &id)
+		n, err := fmt.Sscanf(file, types.SegmentFileNamePattern, &bIdx, &id)
 		if err != nil {
 			return nil, nil, types.ErrCorrupt
 		}
@@ -160,7 +149,7 @@ func (f *Filer) listInternal() (map[uint64]uint64, []uint64, error) {
 // This interface allows a  simpler implementation where we can just delete
 // the file if it exists without having to scan the underlying storage for a.
 func (f *Filer) Delete(baseIndex uint64, ID uint64) error {
-	fname := fmt.Sprintf(segmentFileNamePattern, baseIndex, ID)
+	fname := fmt.Sprintf(types.SegmentFileNamePattern, baseIndex, ID)
 	return f.vfs.Delete(f.dir, fname)
 }
 
@@ -177,7 +166,7 @@ func (f *Filer) Delete(baseIndex uint64, ID uint64) error {
 // entry and the raw bytes of the entry itself. The callback must return true to
 // continue reading. The data slice is only valid for the lifetime of the call.
 func (f *Filer) DumpSegment(baseIndex uint64, ID uint64, after, before uint64, fn func(info types.SegmentInfo, e types.LogEntry) (bool, error)) error {
-	fname := fmt.Sprintf(segmentFileNamePattern, baseIndex, ID)
+	fname := fmt.Sprintf(types.SegmentFileNamePattern, baseIndex, ID)
 
 	rf, err := f.vfs.OpenReader(f.dir, fname)
 	if err != nil {

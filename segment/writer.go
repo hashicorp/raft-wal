@@ -413,6 +413,7 @@ func (w *Writer) appendIndex() error {
 	// Record the file offset where the index starts (the actual index data so
 	// after the frame header).
 	w.writer.indexStart = uint64(w.writer.writeOffset) + uint64(startOff+frameHeaderLen)
+	fmt.Println("Hamid - in appendIndex - index start of the write is: ", w.writer.indexStart)
 	return nil
 }
 

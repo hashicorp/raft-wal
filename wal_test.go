@@ -965,3 +965,31 @@ func TestClose(t *testing.T) {
 	err = w.SetUint64([]byte("foo"), 1)
 	require.ErrorIs(t, err, ErrClosed)
 }
+
+func TestGetSealedSegments(t *testing.T) {
+	tsOpts := []testStorageOpt{
+		segFull(),
+		segFull(),
+		segFull(),
+		segFull(),
+		segTail(10),
+	}
+
+	store := makeRaftLogs(411, 5)
+	ts, w, err := testOpenWAL(t, tsOpts, nil, false)
+	require.NoError(t, err)
+
+	err = w.StoreLogs(store)
+	require.NoError(t, err)
+
+	t.Log(ts.debugDump())
+
+	sealed, err := w.GetSealedLogFiles(200)
+	if err != nil {
+		t.Fatalf("failed to get sealed logs: %v", err)
+	}
+
+	if len(sealed) != 3 {
+		t.Fatalf("expected length of the retrieved segments was 3, got %v", len(sealed))
+	}
+}
