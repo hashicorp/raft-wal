@@ -118,6 +118,11 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 		if err := w.rebuildMetaDB(); err != nil {
 			return nil, err
 		}
+
+		persisted, err = w.metaDB.Load(w.dir)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	newState := state{
