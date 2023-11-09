@@ -71,9 +71,22 @@ func (f *Filer) RecoverTail(info types.SegmentInfo) (types.SegmentWriter, error)
 func (f *Filer) Open(info types.SegmentInfo) (types.SegmentReader, error) {
 	fname := info.FileName()
 
-	rf, err := f.vfs.OpenReader(f.dir, fname)
+	rf, gotInfo, err := f.headerInfo(fname)
 	if err != nil {
 		return nil, err
+	}
+
+	if err := validateFileHeader(*gotInfo, info); err != nil {
+		return nil, err
+	}
+
+	return openReader(info, rf, &f.bufPool)
+}
+
+func (f *Filer) headerInfo(name string) (types.ReadableFile, *types.SegmentInfo, error) {
+	rf, err := f.vfs.OpenReader(f.dir, name)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	// Validate header here since openReader is re-used by writer where it's valid
@@ -87,21 +100,21 @@ func (f *Filer) Open(info types.SegmentInfo) (types.SegmentReader, error) {
 			// never not have a valid header. (I.e. even if crashes happen it should
 			// be impossible to seal a segment with no header written so this
 			// indicates that something truncated the file after the fact)
-			return nil, fmt.Errorf("%w: failed to read header: %s", types.ErrCorrupt, err)
+			return nil, nil, fmt.Errorf("%w: failed to read header: %s", types.ErrCorrupt, err)
 		}
-		return nil, err
+		return nil, nil, err
 	}
 
-	gotInfo, err := readFileHeader(hdr[:])
-	if err != nil {
-		return nil, err
-	}
+	info, err := readFileHeader(hdr[:])
+	return rf, info, err
+}
 
-	if err := validateFileHeader(*gotInfo, info); err != nil {
-		return nil, err
-	}
-
-	return openReader(info, rf, &f.bufPool)
+// HeaderInfo takes a baseIndex and ID and returns the information from the header of said file.
+// This is useful during recovery when the meta-db doesn't exist.
+func (f *Filer) HeaderInfo(baseIndex uint64, ID uint64) (*types.SegmentInfo, error) {
+	fname := fmt.Sprintf(types.SegmentFileNamePattern, baseIndex, ID)
+	_, info, err := f.headerInfo(fname)
+	return info, err
 }
 
 // List returns the set of segment IDs currently stored. It's used by the WAL
@@ -144,10 +157,10 @@ func (f *Filer) listInternal() (map[uint64]uint64, []uint64, error) {
 }
 
 // Delete removes the segment with given baseIndex and id if it exists. Note
-// that baseIndex is technically redundant since ID is unique on it's own. But
+// that baseIndex is technically redundant since ID is unique on its own. But
 // in practice we name files (or keys) with both so that they sort correctly.
-// This interface allows a  simpler implementation where we can just delete
-// the file if it exists without having to scan the underlying storage for a.
+// This interface allows a simpler implementation where we can just delete
+// the file if it exists without having to scan the underlying storage for a - ???.
 func (f *Filer) Delete(baseIndex uint64, ID uint64) error {
 	fname := fmt.Sprintf(types.SegmentFileNamePattern, baseIndex, ID)
 	return f.vfs.Delete(f.dir, fname)
@@ -159,7 +172,7 @@ func (f *Filer) Delete(baseIndex uint64, ID uint64) error {
 // the correct metadata. This allows dumping log segments in a WAL that is still
 // being written to by another process. Without metadata we don't know if the
 // file is sealed so always recover by reading through the whole file. If after
-// or before are non-zero, the specify a exclusive lower or upper bound on which
+// or before are non-zero, they specify an exclusive lower or upper bound on which
 // log entries should be emitted. No error checking is done on the read data. fn
 // is called for each entry passing the raft info read from the file header (so
 // that the caller knows which codec to use for example) the raft index of the
