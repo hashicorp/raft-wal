@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -226,6 +227,7 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 	// above) there are no readers yet since we are constructing a new WAL so we
 	// don't need to jump through the mutateState hoops yet!
 	w.s.Store(&newState)
+	fmt.Printf("newState: %#v\n", newState)
 
 	// Delete any unused segment files left over after a crash.
 	w.deleteSegments(toDelete)
@@ -396,7 +398,7 @@ func (w *WAL) GetSealedLogFiles(fromIndex uint64) ([]*SealedSegmentInfo, error) 
 		// target index also include that.
 		if ok && seg.MinIndex >= fromIndex || seg.MaxIndex >= fromIndex {
 			sealedSegInfo = append(sealedSegInfo, &SealedSegmentInfo{
-				Path:     seg.FileName(),
+				Path:     filepath.Join(w.dir, seg.FileName()),
 				MinIndex: seg.MinIndex,
 				LogCount: (seg.MaxIndex - seg.MinIndex) + 1, // including the maxIndex
 			})

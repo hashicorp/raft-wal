@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/hashicorp/raft-wal/fs"
 	"github.com/hashicorp/raft-wal/segment"
@@ -104,6 +105,7 @@ func (db *BoltMetaDB) ensureOpen(dir string) error {
 	}
 
 	if sfe {
+		fmt.Println("rebuilding meta state from segment files")
 		state := types.PersistentState{}
 		vfs := fs.New()
 		f := segment.NewFiler(dir, vfs)
@@ -126,7 +128,7 @@ func (db *BoltMetaDB) ensureOpen(dir string) error {
 				Codec:      info.Codec,
 				IndexStart: info.IndexStart,
 				CreateTime: info.CreateTime,
-				SealTime:   info.SealTime,
+				SealTime:   time.Now(),
 				SizeLimit:  info.SizeLimit,
 			}
 			state.Segments = append(state.Segments, si)
@@ -242,6 +244,7 @@ func (db *BoltMetaDB) Load(dir string) (types.PersistentState, error) {
 	if err := json.Unmarshal(raw, &state); err != nil {
 		return state, fmt.Errorf("%w: failed to parse persisted state: %s", types.ErrCorrupt, err)
 	}
+	fmt.Printf("state: %#v\n", state)
 	return state, nil
 }
 
