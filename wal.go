@@ -228,6 +228,7 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 	// above) there are no readers yet since we are constructing a new WAL so we
 	// don't need to jump through the mutateState hoops yet!
 	w.s.Store(&newState)
+	fmt.Printf("newState: %#v\n", newState)
 
 	// Delete any unused segment files left over after a crash.
 	w.deleteSegments(toDelete)

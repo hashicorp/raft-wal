@@ -9,7 +9,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
+	"github.com/hashicorp/raft-wal/fs"
+	"github.com/hashicorp/raft-wal/segment"
 	"github.com/hashicorp/raft-wal/types"
 	"go.etcd.io/bbolt"
 )
@@ -63,12 +66,12 @@ func (db *BoltMetaDB) ensureOpen(dir string) error {
 	// BoltDB can get stuck in invalid states if we crash while it's initializing.
 	// We can't distinguish those as safe to just wipe it and start again because
 	// we don't know for sure if it's failing due to bad init or later corruption
-	// (which would loose data if we just wipe and start over). So to ensure
+	// (which would lose data if we just wipe and start over). So to ensure
 	// initial creation of the WAL is as crash-safe as possible we will manually
 	// detect we have an atomic init procedure:
 	//  1. Check if file exits already. If yes, skip init and just open it.
 	//  2. Delete any existing DB file with tmp name
-	//  3. Creat a new BoltDB that is empty and has the buckets with a temp name.
+	//  3. Create a new BoltDB that is empty and has the buckets with a temp name.
 	//  4. Once that's committed, rename to final name and Fsync parent dir
 	_, err := os.Stat(fileName)
 	if err == nil {
@@ -80,13 +83,81 @@ func (db *BoltMetaDB) ensureOpen(dir string) error {
 		return fmt.Errorf("failed to stat %s: %w", FileName, err)
 	}
 
-	// File doesn't exist, initialize a new DB in a crash-safe way
+	// File doesn't exist, initialize a new DB in a crash-safe way.
 	if err := safeInitBoltDB(dir); err != nil {
 		return fmt.Errorf("failed initializing meta DB: %w", err)
 	}
 
-	// All good, now open it!
-	return open()
+	// Open the new db, but don't return just yet
+	err = open()
+	if err != nil {
+		return fmt.Errorf("error opening new metadb: %w", err)
+	}
+
+	// Now that we have a brand new metaDB, check to see if segment files exist.
+	// If they do, then we're probably trying to do a recovery, and we can
+	// populate the new db with some initial values read from the segment file
+	// headers, so that we don't error later on when trying to create a new segment
+	// file that already exists.
+	sfe, err := segmentFilesExist(dir)
+	if err != nil {
+		return fmt.Errorf("failed to check for segment files: %w", err)
+	}
+
+	if sfe {
+		fmt.Println("rebuilding meta state from segment files")
+		state := types.PersistentState{}
+		vfs := fs.New()
+		f := segment.NewFiler(dir, vfs)
+		indexes, err := f.List()
+		if err != nil {
+			return fmt.Errorf("failed to list segment IDs: %w", err)
+		}
+
+		for id, baseIndex := range indexes {
+			info, err := f.HeaderInfo(baseIndex, id)
+			if err != nil {
+				return fmt.Errorf("failed to read header for file at baseIndex %d id %d: %w", baseIndex, id, err)
+			}
+			state.NextSegmentID = info.ID + 1
+			si := types.SegmentInfo{
+				ID:         info.ID,
+				BaseIndex:  info.BaseIndex,
+				MinIndex:   info.MinIndex,
+				MaxIndex:   info.MaxIndex,
+				Codec:      info.Codec,
+				IndexStart: info.IndexStart,
+				CreateTime: info.CreateTime,
+				SealTime:   time.Now(),
+				SizeLimit:  info.SizeLimit,
+			}
+			state.Segments = append(state.Segments, si)
+		}
+
+		err = db.CommitState(state)
+		if err != nil {
+			return fmt.Errorf("failed to commit state: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func segmentFilesExist(dir string) (bool, error) {
+	sfe := false
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false, err
+	}
+
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == ".wal" {
+			sfe = true
+			break
+		}
+	}
+
+	return sfe, nil
 }
 
 func safeInitBoltDB(dir string) error {
@@ -173,6 +244,7 @@ func (db *BoltMetaDB) Load(dir string) (types.PersistentState, error) {
 	if err := json.Unmarshal(raw, &state); err != nil {
 		return state, fmt.Errorf("%w: failed to parse persisted state: %s", types.ErrCorrupt, err)
 	}
+	fmt.Printf("state: %#v\n", state)
 	return state, nil
 }
 

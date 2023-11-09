@@ -87,7 +87,7 @@ func (fs *FS) Create(dir string, name string, size uint64) (types.WritableFile, 
 	return fi, nil
 }
 
-// Delete indicates the file is no longer required. Typically it should be
+// Delete indicates the file is no longer required. Typically it shoutld be
 // deleted from the underlying system to free disk space.
 func (fs *FS) Delete(dir string, name string) error {
 	if err := os.Remove(filepath.Join(dir, name)); err != nil {
