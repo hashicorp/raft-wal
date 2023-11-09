@@ -84,6 +84,7 @@ type WAL struct {
 	triggerRotate    chan uint64
 	awaitRotate      chan struct{}
 	requireDeletable bool
+	regenerateMeta   bool
 }
 
 type walOpt func(*WAL)
@@ -110,6 +111,13 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 	persisted, err := w.metaDB.Load(w.dir)
 	if err != nil {
 		return nil, err
+	}
+
+	if w.regenerateMeta {
+		w.log.Info("rebuilding meta-db based on segment files")
+		if err := w.rebuildMetaDB(); err != nil {
+			return nil, err
+		}
 	}
 
 	newState := state{
@@ -236,6 +244,33 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 	go w.runRotate()
 
 	return w, nil
+}
+
+func (w *WAL) rebuildMetaDB() error {
+	newState := state{
+		segments: &immutable.SortedMap[uint64, segmentState]{},
+	}
+
+	irs, err := w.sf.GetLogs()
+	if err != nil {
+		return err
+	}
+
+	for _, ir := range irs {
+		newState.segments = newState.segments.Set(ir.SegmentInfo.MinIndex, segmentState{
+			SegmentInfo: ir.SegmentInfo,
+			r:           ir.SegmentReader,
+		})
+		newState.nextSegmentID = ir.SegmentInfo.ID + 1
+	}
+
+	if err := w.metaDB.CommitState(newState.Persistent()); err != nil {
+		return err
+	}
+
+	w.s.Store(&newState)
+
+	return nil
 }
 
 // stateTxn represents a transaction body that mutates the state under the

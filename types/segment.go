@@ -69,6 +69,11 @@ type SegmentInfo struct {
 	DeletableTime time.Time
 }
 
+type SegmentInfoReader struct {
+	SegmentInfo
+	SegmentReader
+}
+
 // SegmentFiler is the interface that provides access to segments to the WAL. It
 // encapsulated creating, and recovering segments and returning reader or writer
 // interfaces to interact with them. It's main purpose is to abstract the core
@@ -106,6 +111,8 @@ type SegmentFiler interface {
 	// This interface allows a  simpler implementation where we can just delete
 	// the file if it exists without having to scan the underlying storage for a.
 	Delete(baseIndex, ID uint64) error
+
+	GetLogs() ([]SegmentInfoReader, error)
 }
 
 // SegmentWriter manages appending logs to the tail segment of the WAL. It's an

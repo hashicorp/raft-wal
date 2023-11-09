@@ -104,6 +104,40 @@ func (f *Filer) Open(info types.SegmentInfo) (types.SegmentReader, error) {
 	return openReader(info, rf, &f.bufPool)
 }
 
+// OpenRaw opens an already sealed segment for reading.
+func (f *Filer) OpenRaw(fname string) (*types.SegmentInfo, types.SegmentReader, error) {
+	rf, err := f.vfs.OpenReader(f.dir, fname)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Validate header here since openReader is re-used by writer where it's valid
+	// for the file header not to be committed yet after a crash so we can't check
+	// it there.
+	var hdr [fileHeaderLen]byte
+
+	if _, err := rf.ReadAt(hdr[:], 0); err != nil {
+		if errors.Is(err, io.EOF) {
+			// Treat failure to read a header as corruption since a sealed file should
+			// never not have a valid header. (I.e. even if crashes happen it should
+			// be impossible to seal a segment with no header written so this
+			// indicates that something truncated the file after the fact)
+			return nil, nil, fmt.Errorf("%w: failed to read header: %s", types.ErrCorrupt, err)
+		}
+		return nil, nil, err
+	}
+
+	info, err := readFileHeader(hdr[:])
+	if err != nil {
+		return nil, nil, err
+	}
+	reader, err := openReader(*info, rf, &f.bufPool)
+	if err != nil {
+		return nil, nil, err
+	}
+	return info, reader, nil
+}
+
 // List returns the set of segment IDs currently stored. It's used by the WAL
 // on recovery to find any segment files that need to be deleted following a
 // unclean shutdown. The returned map is a map of ID -> BaseIndex. BaseIndex
@@ -281,4 +315,23 @@ func (f *Filer) DumpLogs(after, before uint64, fn func(info types.SegmentInfo, e
 	}
 
 	return nil
+}
+
+func (f *Filer) GetLogs() ([]types.SegmentInfoReader, error) {
+	baseIndexes, segIDsSorted, err := f.listInternal()
+	if err != nil {
+		return nil, err
+	}
+
+	var ret []types.SegmentInfoReader
+	for _, id := range segIDsSorted {
+		fname := fmt.Sprintf(types.SegmentFileNamePattern, baseIndexes[id], id)
+		info, reader, err := f.OpenRaw(fname)
+		if err != nil {
+			return nil, err
+		}
+		ret = append(ret, types.SegmentInfoReader{*info, reader})
+	}
+
+	return ret, nil
 }

@@ -66,6 +66,12 @@ func WithMetricsCollector(c metrics.Collector) walOpt {
 	}
 }
 
+func WithRegenerateMeta(b bool) walOpt {
+	return func(w *WAL) {
+		w.regenerateMeta = b
+	}
+}
+
 func (w *WAL) applyDefaultsAndValidate() error {
 	// Check if an external codec has been used that it's not using a reserved ID.
 	if w.codec != nil && w.codec.ID() < FirstExternalCodecID {
