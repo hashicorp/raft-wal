@@ -46,6 +46,12 @@ func WithLogger(logger hclog.Logger) walOpt {
 	}
 }
 
+func WithRequireDeletable() walOpt {
+	return func(w *WAL) {
+		w.requireDeletable = true
+	}
+}
+
 // WithSegmentSize is an option that allows a custom segmentSize to be set.
 func WithSegmentSize(size int) walOpt {
 	return func(w *WAL) {

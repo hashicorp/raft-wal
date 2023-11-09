@@ -64,6 +64,9 @@ type SegmentInfo struct {
 	// limit in the sense that the final Append usually takes the segment file
 	// past this size before it is considered full and sealed.
 	SizeLimit uint32
+
+	// DeletableTime records when a sealed segment was marked as deletable.
+	DeletableTime time.Time
 }
 
 // SegmentFiler is the interface that provides access to segments to the WAL. It

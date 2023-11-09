@@ -466,6 +466,7 @@ func TestDeleteRange(t *testing.T) {
 		expectDeleted          []uint64
 		expectNHeadTruncations uint64
 		expectNTailTruncations uint64
+		markDeleted            []uint64
 	}{
 		{
 			name: "no-op empty range",
@@ -626,6 +627,22 @@ func TestDeleteRange(t *testing.T) {
 			// deletion.
 			expectNHeadTruncations: 210,
 		},
+		{
+			name:    "head truncation with deletability considered",
+			walOpts: []walOpt{WithRequireDeletable()},
+			tsOpts: []testStorageOpt{
+				firstIndex(1000),
+				segFull(),
+				segTail(10),
+			},
+			// Delete a range before the log starts
+			deleteMin:              0,
+			deleteMax:              1101,
+			expectFirstIndex:       1102,
+			expectLastIndex:        1000 + 100 + 10 - 1,
+			expectNHeadTruncations: 102,
+			markDeleted:            []uint64{1000},
+		},
 	}
 
 	for _, tc := range cases {
@@ -641,6 +658,11 @@ func TestDeleteRange(t *testing.T) {
 
 			ts, w, err := testOpenWAL(t, tc.tsOpts, opts, false)
 			require.NoError(t, err)
+
+			for _, baseIndex := range tc.markDeleted {
+				err = w.MarkSealedLogDeletable(baseIndex)
+				require.NoError(t, err)
+			}
 
 			err = w.DeleteRange(tc.deleteMin, tc.deleteMax)
 

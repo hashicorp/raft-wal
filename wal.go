@@ -81,8 +81,9 @@ type WAL struct {
 	// checks if awaitRotate. If it is nil there is no rotation going on so
 	// StoreLogs can proceed. If it is non-nil, it releases the lock and then
 	// waits on the close before acquiring the lock and continuing.
-	triggerRotate chan uint64
-	awaitRotate   chan struct{}
+	triggerRotate    chan uint64
+	awaitRotate      chan struct{}
+	requireDeletable bool
 }
 
 type walOpt func(*WAL)
@@ -350,6 +351,13 @@ func (w *WAL) GetLog(index uint64, log *raft.Log) error {
 	return w.codec.Decode(raw.Bs, log)
 }
 
+type ArchiverInterface interface {
+	GetSealedLogFiles(fromIndex uint64) ([]*SealedSegmentInfo, error)
+	MarkSealedLogDeletable(minIndex uint64) error
+}
+
+var _ ArchiverInterface = &WAL{}
+
 type SealedSegmentInfo struct {
 	Path     string
 	LogCount uint64
@@ -404,6 +412,20 @@ func (w *WAL) GetSealedLogFiles(fromIndex uint64) ([]*SealedSegmentInfo, error) 
 	}
 
 	return sealedSegInfo, nil
+}
+
+func (w *WAL) MarkSealedLogDeletable(minIndex uint64) error {
+	txn := func(newState *state) (func(), func() error, error) {
+		seg, ok := newState.segments.Get(minIndex)
+		if !ok {
+			return nil, nil, ErrNotFound
+		}
+		seg.DeletableTime = time.Now()
+		newState.segments = newState.segments.Set(minIndex, seg)
+		return nil, nil, nil
+	}
+
+	return w.mutateStateLocked(txn)
 }
 
 // StoreLog stores a log entry.
@@ -762,6 +784,9 @@ func (w *WAL) resetEmptyFirstSegmentBaseIndex(newBaseIndex uint64) error {
 				// It's fine as it is, no-op
 				return nil, nil, nil
 			}
+			// TODO confirm that this cannot be a sealed segment, or if that's
+			// wrong, block until it's deletable.
+
 			// It needs to be removed
 			newState.segments = newState.segments.Delete(tailSeg.BaseIndex)
 			newState.tail = nil
@@ -785,6 +810,8 @@ func (w *WAL) resetEmptyFirstSegmentBaseIndex(newBaseIndex uint64) error {
 
 	return w.mutateStateLocked(txn)
 }
+
+var ErrUndeletable = errors.New("some segments are still pending deletability")
 
 func (w *WAL) truncateHeadLocked(newMin uint64) error {
 	txn := stateTxn(func(newState *state) (func(), func() error, error) {
@@ -812,6 +839,10 @@ func (w *WAL) truncateHeadLocked(newMin uint64) error {
 			} else if seg.MaxIndex >= newMin {
 				head = &seg
 				break
+			}
+
+			if w.requireDeletable && seg.DeletableTime.IsZero() {
+				return nil, nil, ErrUndeletable
 			}
 
 			toDelete[seg.ID] = seg.BaseIndex
@@ -853,7 +884,18 @@ func (w *WAL) truncateHeadLocked(newMin uint64) error {
 		return fin, postCommit, nil
 	})
 
-	return w.mutateStateLocked(txn)
+	for {
+		err := w.mutateStateLocked(txn)
+		switch err {
+		case nil:
+			return nil
+		case ErrUndeletable:
+			time.Sleep(500 * time.Second)
+			continue
+		default:
+			return err
+		}
+	}
 }
 
 func (w *WAL) truncateTailLocked(newMax uint64) error {
@@ -876,6 +918,10 @@ func (w *WAL) truncateTailLocked(newMax uint64) error {
 			maxIdx := seg.MaxIndex
 			if seg.SealTime.IsZero() {
 				maxIdx = newState.lastIndex()
+			}
+
+			if w.requireDeletable && seg.DeletableTime.IsZero() {
+				return nil, nil, ErrUndeletable
 			}
 
 			toDelete[seg.ID] = seg.BaseIndex
@@ -925,7 +971,18 @@ func (w *WAL) truncateTailLocked(newMax uint64) error {
 		return fin, pc, nil
 	})
 
-	return w.mutateStateLocked(txn)
+	for {
+		err := w.mutateStateLocked(txn)
+		switch err {
+		case nil:
+			return nil
+		case ErrUndeletable:
+			time.Sleep(500 * time.Second)
+			continue
+		default:
+			return err
+		}
+	}
 }
 
 func (w *WAL) deleteSegments(toDelete map[uint64]uint64) {
