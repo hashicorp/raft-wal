@@ -287,6 +287,7 @@ func (w *Writer) Append(entries []types.LogEntry) error {
 	ofs := w.getOffsets()
 	// Work out if we need to seal before we commit and sync.
 	if (w.writer.writeOffset + uint32(len(w.writer.commitBuf)+indexFrameSize(len(ofs)))) > w.info.SizeLimit {
+		fmt.Println("appending index at offset", w.writer.writeOffset)
 		// Seal the segment! We seal it by writing an index frame before we commit.
 		if err := w.appendIndex(); err != nil {
 			return err

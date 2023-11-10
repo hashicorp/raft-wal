@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/raft-wal/types"
 )
@@ -294,4 +295,42 @@ func (f *Filer) DumpLogs(after, before uint64, fn func(info types.SegmentInfo, e
 	}
 
 	return nil
+}
+
+func (f *Filer) RecoverSegment(baseIndex uint64, ID uint64) (*types.SegmentInfo, error) {
+	fname := fmt.Sprintf(types.SegmentFileNamePattern, baseIndex, ID)
+
+	rf, err := f.vfs.OpenReader(f.dir, fname)
+	if err != nil {
+		return nil, err
+	}
+
+	idx := baseIndex
+	ret := types.SegmentInfo{ID: ID, BaseIndex: baseIndex, MinIndex: baseIndex}
+
+	_, err = readThroughSegment(rf, func(info types.SegmentInfo, fh frameHeader, offset int64) (bool, error) {
+		switch fh.typ {
+		case FrameInvalid:
+			return false, fmt.Errorf("invalid frame")
+
+		case FrameEntry:
+			if idx == baseIndex {
+				ret.Codec = info.Codec
+			}
+			idx++
+
+		case FrameIndex:
+			ret.SealTime = time.Now()
+			ret.IndexStart = uint64(offset) + frameHeaderLen
+
+		case FrameCommit:
+		}
+
+		return true, nil
+	})
+	if idx != baseIndex {
+		ret.MaxIndex = idx - 1
+	}
+
+	return &ret, err
 }
