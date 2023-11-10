@@ -321,7 +321,7 @@ func (f *Filer) RecoverSegment(baseIndex uint64, ID uint64) (*types.SegmentInfo,
 
 		case FrameIndex:
 			ret.SealTime = time.Now()
-			ret.IndexStart = uint64(offset)
+			ret.IndexStart = uint64(offset) + frameHeaderLen
 
 		case FrameCommit:
 		}
