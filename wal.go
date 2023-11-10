@@ -126,6 +126,7 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 
 	// Build the state
 	recoveredTail := false
+	nextBaseIndex := uint64(1)
 	for i, si := range persisted.Segments {
 
 		// Verify we can decode the entries.
@@ -187,6 +188,7 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 			r:           sr,
 		}
 		newState.segments = newState.segments.Set(si.BaseIndex, ss)
+		nextBaseIndex = si.MaxIndex + 1
 	}
 
 	if !recoveredTail {
@@ -198,7 +200,7 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 		// Create a new segment. We use baseIndex of 1 even though the first append
 		// might be much higher - we'll allow that since we know we have no records
 		// yet and so lastIndex will also be 0.
-		si := w.newSegment(newState.nextSegmentID, 1)
+		si := w.newSegment(newState.nextSegmentID, nextBaseIndex)
 		newState.nextSegmentID++
 		ss := segmentState{
 			SegmentInfo: si,
@@ -228,7 +230,6 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 	// above) there are no readers yet since we are constructing a new WAL so we
 	// don't need to jump through the mutateState hoops yet!
 	w.s.Store(&newState)
-	fmt.Printf("newState: %#v\n", newState)
 
 	// Delete any unused segment files left over after a crash.
 	w.deleteSegments(toDelete)
