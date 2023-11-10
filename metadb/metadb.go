@@ -7,14 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"time"
-
 	"github.com/hashicorp/raft-wal/fs"
 	"github.com/hashicorp/raft-wal/segment"
 	"github.com/hashicorp/raft-wal/types"
 	"go.etcd.io/bbolt"
+	"os"
+	"path/filepath"
+	"sort"
 )
 
 const (
@@ -113,25 +112,28 @@ func (db *BoltMetaDB) ensureOpen(dir string) error {
 		if err != nil {
 			return fmt.Errorf("failed to list segment IDs: %w", err)
 		}
+		sorted := make([]uint64, 0)
+		for id := range indexes {
+			sorted = append(sorted, id)
+		}
+		sort.Slice(sorted, func(i, j int) bool {
+			return sorted[i] < sorted[j]
+		})
 
-		for id, baseIndex := range indexes {
-			info, err := f.HeaderInfo(baseIndex, id)
+		for _, id := range sorted {
+			baseIndex := indexes[id]
+			state.NextSegmentID = id + 1
+			si, err := f.RecoverSegment(baseIndex, id)
 			if err != nil {
-				return fmt.Errorf("failed to read header for file at baseIndex %d id %d: %w", baseIndex, id, err)
+				return fmt.Errorf("error recovering segment with ID=%v, baseIndex=%d: %w", id, baseIndex, err)
 			}
-			state.NextSegmentID = info.ID + 1
-			si := types.SegmentInfo{
-				ID:         info.ID,
-				BaseIndex:  info.BaseIndex,
-				MinIndex:   info.MinIndex,
-				MaxIndex:   info.MaxIndex,
-				Codec:      info.Codec,
-				IndexStart: info.IndexStart,
-				CreateTime: info.CreateTime,
-				SealTime:   time.Now(),
-				SizeLimit:  info.SizeLimit,
+			if len(state.Segments) > 0 {
+				lastMax := state.Segments[len(state.Segments)-1].MaxIndex
+				if lastMax+1 != si.MinIndex {
+					return fmt.Errorf("error recovering segment with ID=%v, baseIndex=%d: last segment's MaxIndex=%d, not aligned", id, baseIndex, lastMax)
+				}
 			}
-			state.Segments = append(state.Segments, si)
+			state.Segments = append(state.Segments, *si)
 		}
 
 		err = db.CommitState(state)
