@@ -3,7 +3,7 @@
 
 package metrics
 
-import gometrics "github.com/armon/go-metrics"
+import gometrics "github.com/hashicorp/go-metrics"
 
 // GoMetricsCollector implements a Collector that passes through observations to
 // a go-metrics instance. The zero value works, writing metrics to the default
