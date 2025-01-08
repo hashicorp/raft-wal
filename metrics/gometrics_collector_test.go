@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	gometrics "github.com/armon/go-metrics"
+	gometrics "github.com/hashicorp/go-metrics/compat"
 	"github.com/stretchr/testify/require"
 )
 
