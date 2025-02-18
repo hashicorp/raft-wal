@@ -10,8 +10,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/coreos/etcd/pkg/fileutil"
 	"github.com/hashicorp/raft-wal/types"
+	"go.etcd.io/etcd/client/pkg/v3/fileutil"
 )
 
 // FS implements the wal.VFS interface using GO's built in OS Filesystem (and a
