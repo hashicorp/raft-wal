@@ -2,7 +2,9 @@
 
 name: go-tests
 
-on: [push]
+on: 
+  push:
+    branches: [linting]
 
 env:
   TEST_RESULTS: /tmp/test-results
@@ -51,6 +53,9 @@ jobs:
               exit 1
             fi
 
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@08e2f20817b15149a52b5b3ebe7de50aff2ba8c5
+
       # Install gotestsum
       - name: Install gotestsum
         run: |
@@ -79,3 +84,6 @@ jobs:
         with:
           name: Test Results
           path: ${{ env.TEST_RESULTS }}
+
+      - name: Display coverage report
+        run: go tool cover -func=$TEST_RESULTS/coverage.out

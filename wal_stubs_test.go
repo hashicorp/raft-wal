@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"sort"
 	"strings"
@@ -68,12 +69,15 @@ func segFull() testStorageOpt {
 			panic(err)
 		}
 		// Seal "full" segments
-		seg.mutate(func(newState *testSegmentState) error {
+		err := seg.mutate(func(newState *testSegmentState) error {
 			newState.info.SealTime = time.Now()
 			newState.info.IndexStart = 12345
 			newState.info.MaxIndex = newState.info.BaseIndex + uint64(len(es)) - 1
 			return nil
 		})
+		if err != nil {
+			log.Print(err)
+		}
 		ts.setupMaxIndex += uint64(seg.numLogs())
 		ts.segments[seg.info().ID] = seg
 
@@ -361,10 +365,13 @@ func (ts *testStorage) CommitState(ps types.PersistentState) error {
 			// places should fail and it wouldn't be a realistic error to return here.
 			continue
 		}
-		ts.mutate(func(newState *testSegmentState) error {
+		err := ts.mutate(func(newState *testSegmentState) error {
 			newState.info = seg
 			return nil
 		})
+		if err != nil {
+			log.Print(err)
+		}
 	}
 
 	return ts.commitErr

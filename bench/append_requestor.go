@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"log"
 	"path/filepath"
 	"sync/atomic"
 	"time"
@@ -29,7 +30,9 @@ var (
 
 func init() {
 	randomData = make([]byte, 1024*1024)
-	rand.Read(randomData)
+	if _, err := rand.Read(randomData); err != nil {
+		log.Printf("failed to read random data: %v", err)
+	}
 }
 
 // appendRequesterFactory implements bench.RequesterFactory
@@ -178,7 +181,9 @@ func (r *appendRequester) runTruncate(ctx context.Context) {
 				st := time.Now()
 				err := r.store.DeleteRange(first, deleteMax)
 				elapsed := time.Since(st)
-				r.truncateTiming.RecordValue(elapsed.Microseconds())
+				if err := r.truncateTiming.RecordValue(elapsed.Microseconds()); err != nil {
+					log.Print(err)
+				}
 				if err != nil {
 					panic(err)
 				}

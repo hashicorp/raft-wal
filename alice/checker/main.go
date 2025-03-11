@@ -25,7 +25,7 @@ func main() {
 	}
 }
 
-var re = regexp.MustCompile("(\\w+)=(\\d+)")
+var re = regexp.MustCompile(`(\\w+)=(\\d+)`)
 
 type runSummary struct {
 	lastCommit                 uint64
