@@ -178,7 +178,9 @@ func TestWALOpen(t *testing.T) {
 				segTail(0),
 				func(ts *testStorage) {
 					// Simulate the tail file not being created yet after a crash.
-					ts.Delete(101, 101)
+					if err := ts.Delete(101, 101); err != nil {
+						t.Fatal(err)
+					}
 				},
 			},
 			expectSegmentBases: []uint64{1, 101},

@@ -8,7 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,8 +101,12 @@ func main() {
 	printHistogram(teeOut, "Good Append Latencies (ms)", summary.SuccessHistogram, 1_000_000)
 
 	fmt.Fprintln(teeOut, summary)
-	summary.GenerateLatencyDistribution(nil, outFileName(o, "append-lat"))
-	ioutil.WriteFile(outFileName(o, "stdout"), outBuf.Bytes(), 0644)
+	if err := summary.GenerateLatencyDistribution(nil, outFileName(o, "append-lat")); err != nil {
+		log.Print(err)
+	}
+	if err := os.WriteFile(outFileName(o, "stdout"), outBuf.Bytes(), 0644); err != nil {
+		log.Print(err)
+	}
 }
 
 func outFileName(o opts, suffix string) string {

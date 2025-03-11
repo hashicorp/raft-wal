@@ -532,7 +532,7 @@ func (s testStep) String() string {
 		return fmt.Sprintf("append(%d)", len(s.appendBatch))
 
 	case s.appendBatch != nil && s.checkPoint:
-		return fmt.Sprintf("checkpoint()")
+		return "checkpoint()"
 
 	case s.replicateMax != 0:
 		corrupt := ""
@@ -570,7 +570,7 @@ func (s testStep) String() string {
 		return fmt.Sprintf("corruptWal(%s, %d)", s.targetNode, s.corruptWALIndex)
 
 	default:
-		return fmt.Sprintf("invalid step")
+		return "invalid step"
 	}
 }
 
