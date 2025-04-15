@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coreos/etcd/pkg/fileutil"
 	"github.com/hashicorp/raft"
 	raftboltdb "github.com/hashicorp/raft-boltdb"
 	wal "github.com/hashicorp/raft-wal"
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/client/pkg/v3/fileutil"
 )
 
 func BenchmarkAppend(b *testing.B) {
