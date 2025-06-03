@@ -129,7 +129,7 @@ func Open(dir string, opts ...walOpt) (*WAL, error) {
 		// Verify we can decode the entries.
 		// TODO: support multiple decoders to allow rotating codec.
 		if si.Codec != w.codec.ID() {
-			return nil, fmt.Errorf("segment with BasedIndex=%d uses an unknown codec", si.BaseIndex)
+			return nil, fmt.Errorf("segment with BasedIndex=%d uses an unknown codec %d expecting %d", si.BaseIndex, si.Codec, w.codec.ID())
 		}
 
 		// We want to keep this segment since it's still in the metaDB list!
@@ -302,9 +302,9 @@ func (w *WAL) newSegment(ID, baseIndex uint64) types.SegmentInfo {
 		BaseIndex: baseIndex,
 		MinIndex:  baseIndex,
 		SizeLimit: uint32(w.segmentSize),
+		Codec:     w.codec.ID(),
 
 		// TODO make these configurable
-		Codec:      CodecBinaryV1,
 		CreateTime: time.Now(),
 	}
 }
