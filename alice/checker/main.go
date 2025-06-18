@@ -25,7 +25,7 @@ func main() {
 	}
 }
 
-var re = regexp.MustCompile("(\\w+)=(\\d+)")
+var re = regexp.MustCompile(`(\w+)=(\d+)`)
 
 type runSummary struct {
 	lastCommit                 uint64
@@ -103,14 +103,14 @@ func validateFirst(first uint64, expect runSummary) error {
 		if expect.truncatedHead {
 			// We actually completed the truncation. First must now be the new index.
 			if first != expect.truncatedBefore {
-				return fmt.Errorf("Expected first to be %d after truncation. Got %d",
+				return fmt.Errorf("expected first to be %d after truncation. Got %d",
 					expect.truncatedBefore, first)
 			}
 
 		} else {
 			// Not sure if truncation completed or not so allow either value
 			if first != 1 && first != expect.willTruncateBefore {
-				return fmt.Errorf("Expected first to be 1 before truncation, %d after. Got %d",
+				return fmt.Errorf("expected first to be 1 before truncation, %d after. Got %d",
 					expect.willTruncateBefore, first)
 			}
 		}
@@ -120,14 +120,14 @@ func validateFirst(first uint64, expect runSummary) error {
 		// truncation (after=0) In this case first will either be 1 before, 0 right
 		// after truncation or 1 again after the next append.
 		if first != 0 && first != 1 {
-			return fmt.Errorf("Expected first to be 1 before truncation, 0 after or 1 after the next append. Got %d",
+			return fmt.Errorf("expected first to be 1 before truncation, 0 after or 1 after the next append. Got %d",
 				first)
 		}
 
 	default:
 		// No head truncations can have started yet.
 		if first != 1 && first != 0 {
-			return fmt.Errorf("Want first=1 or first=0 (if no writes yet) before any truncation. Got %d", first)
+			return fmt.Errorf("want first=1 or first=0 (if no writes yet) before any truncation. Got %d", first)
 		}
 	}
 	return nil
@@ -140,7 +140,7 @@ func validateLast(last uint64, expect runSummary) error {
 			// We actually completed the truncation. Last must now be the new index,
 			// or the subsequent write if that's higher.
 			if last != expect.truncatedAfter && last != expect.truncatedAfter+1 {
-				return fmt.Errorf("Expected last to be %d after truncation or %d after subsequent append. Got %d",
+				return fmt.Errorf("expected last to be %d after truncation or %d after subsequent append. Got %d",
 					expect.truncatedAfter, expect.truncatedAfter+1, last)
 			}
 
@@ -149,7 +149,7 @@ func validateLast(last uint64, expect runSummary) error {
 			// than the truncate after target (since we know the workload always
 			// truncates after an index lower than commitIdx).
 			if last < expect.willTruncateAfter {
-				return fmt.Errorf("Expected last to be >= %d after before or after truncation. Got %d",
+				return fmt.Errorf("expected last to be >= %d after before or after truncation. Got %d",
 					expect.willTruncateAfter, last)
 			}
 		}
@@ -157,7 +157,7 @@ func validateLast(last uint64, expect runSummary) error {
 	default:
 		// No tail truncations can have started yet. Just ensure we have everything committed.
 		if last < expect.lastCommit {
-			return fmt.Errorf("Want last >= lastCommit. Lost committed writes! last=%d commitIdx=%d", last, expect.lastCommit)
+			return fmt.Errorf("want last >= lastCommit. Lost committed writes! last=%d commitIdx=%d", last, expect.lastCommit)
 		}
 	}
 	return nil

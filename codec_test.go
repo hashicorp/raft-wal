@@ -32,8 +32,8 @@ func TestBinaryCodecFuzz(t *testing.T) {
 			var sec, nsec int64
 			// Allow for about 1000 years of random time values, which keeps things
 			// like JSON parsing reasonably happy.
-			sec = c.Rand.Int63n(1000 * 365 * 24 * 60 * 60)
-			nsec = c.Rand.Int63n(999_999_999)
+			sec = c.Int63n(1000 * 365 * 24 * 60 * 60)
+			nsec = c.Int63n(999_999_999)
 			*t = time.Unix(sec, nsec)
 		},
 	)

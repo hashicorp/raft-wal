@@ -233,9 +233,6 @@ type testStorage struct {
 	// lastDir stores the last dir argument passed to any method that accepts it
 	lastDir string
 
-	// lastName stores the last name argument passed to any method that accepts it
-	lastName string
-
 	metaState types.PersistentState
 	stable    map[string][]byte
 

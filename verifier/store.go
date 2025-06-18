@@ -10,7 +10,6 @@ import (
 	"io"
 	"sync/atomic"
 
-	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
 	"github.com/hashicorp/raft-wal/metrics"
 )
@@ -50,7 +49,6 @@ type LogStore struct {
 	s raft.LogStore
 
 	metrics metrics.Collector
-	log     hclog.Logger
 
 	verifyCh chan VerificationReport
 

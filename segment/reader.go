@@ -114,9 +114,9 @@ func (r *Reader) makeBuffer() *types.PooledBuffer {
 	if r.bufPool == nil {
 		return &types.PooledBuffer{Bs: make([]byte, minBufSize)}
 	}
-	buf := r.bufPool.Get().([]byte)
+	buf := r.bufPool.Get().(*[]byte)
 	return &types.PooledBuffer{
-		Bs: buf,
+		Bs: *buf,
 		CloseFn: func() {
 			// Note we always return the whole allocated buf regardless of what Bs
 			// ended up being sliced to.

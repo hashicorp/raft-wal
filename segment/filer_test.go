@@ -435,7 +435,7 @@ func TestListAndDelete(t *testing.T) {
 	delete(expectFiles, lastSealedID)
 
 	// List should be updated
-	list, err = f.List()
+	_, err = f.List()
 	require.NoError(t, err)
 }
 

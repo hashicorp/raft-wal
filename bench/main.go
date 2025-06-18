@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,7 +101,7 @@ func main() {
 
 	fmt.Fprintln(teeOut, summary)
 	summary.GenerateLatencyDistribution(nil, outFileName(o, "append-lat"))
-	ioutil.WriteFile(outFileName(o, "stdout"), outBuf.Bytes(), 0644)
+	os.WriteFile(outFileName(o, "stdout"), outBuf.Bytes(), 0644)
 }
 
 func outFileName(o opts, suffix string) string {

@@ -4,7 +4,6 @@
 package metadb
 
 import (
-	"io/ioutil"
 	"os"
 	"testing"
 	"time"
@@ -97,7 +96,7 @@ func TestMetaDBErrors(t *testing.T) {
 	require.NoError(t, err)
 
 	// But not from a different (valid) one
-	tmpDir2, err := ioutil.TempDir("", "wal-fs-test-*")
+	tmpDir2, err := os.MkdirTemp("", "wal-fs-test-*")
 	require.NoError(t, err)
 	defer os.RemoveAll(tmpDir2)
 
