@@ -6,6 +6,7 @@ package segment
 import (
 	"bytes"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -31,7 +32,9 @@ func TestSegmentBasics(t *testing.T) {
 
 	w, err := f.Create(seg0)
 	require.NoError(t, err)
-	defer w.Close()
+	t.Cleanup(func() {
+		_ = w.Close()
+	})
 
 	// Verify the underlying File is not "dirty" (i.e. it had Sync called after
 	// being created and written to).
@@ -52,7 +55,7 @@ func TestSegmentBasics(t *testing.T) {
 	// header.
 	r, err := f.Open(seg0)
 	require.NoError(t, err)
-	r.Close() // Done with this for now.
+	_ = r.Close() // Done with this for now.
 
 	// Should be able to read that from tail (can't use "open" yet to read it
 	// separately since it's not a sealed segment).
@@ -287,11 +290,16 @@ func TestRecovery(t *testing.T) {
 
 			w, err := f.Create(seg0)
 			require.NoError(t, err)
-			defer w.Close()
+			t.Cleanup(func() {
+				// Certain test cases can clobber w after a recover with a nil value.
+				if !reflect.ValueOf(w).IsNil() {
+					_ = w.Close()
+				}
+			})
 
 			// Append previous entries. We just pick a fixed size and format that's
 			// easy to verify but generally fits in our test block size.
-			for i := 0; i < tc.numPreviousEntries; i++ {
+			for i := range tc.numPreviousEntries {
 				// Append individually, could do commit batches but this is all in
 				// memory so no real benefit.
 				v := fmt.Sprintf("%05d: blah", i+1) // 11 bytes == 16 + 8 + 4 with overhead
@@ -312,7 +320,7 @@ func TestRecovery(t *testing.T) {
 
 			err = w.Append(batch)
 			require.NoError(t, err)
-			w.Close()
+			_ = w.Close()
 
 			// All written. Optionally corrupt the underlying file data to simulate
 			// different crash cases.
@@ -350,7 +358,7 @@ func TestRecovery(t *testing.T) {
 				return
 			} else {
 				// Verify we can continue to append and then read back everything.
-				for i := 0; i < 10; i++ {
+				for range 10 {
 					// Append individually, could do commit batches but this is all in
 					// memory so no real benefit.
 					lastIdx++
@@ -365,7 +373,7 @@ func TestRecovery(t *testing.T) {
 					// after we've appended more data.
 					r, err := f.Open(seg0)
 					require.NoError(t, err)
-					r.Close()
+					_ = r.Close()
 				}
 			}
 
@@ -408,14 +416,14 @@ func TestListAndDelete(t *testing.T) {
 			require.NoError(t, err)
 			idx++
 		}
-		w.Close()
+		_ = w.Close()
 	}
 
 	// And one tail
 	seg := testSegment(idx)
 	w, err := f.Create(seg)
 	require.NoError(t, err)
-	w.Close()
+	_ = w.Close()
 	expectFiles[seg.ID] = seg.BaseIndex
 
 	// Now list should have all the segments.
@@ -542,7 +550,7 @@ func TestDumpSegment(t *testing.T) {
 		require.NoError(t, err)
 		idx++
 	}
-	w.Close()
+	_ = w.Close()
 
 	// And one tail
 	seg2 := testSegment(idx)
@@ -551,7 +559,9 @@ func TestDumpSegment(t *testing.T) {
 	err = w.Append([]types.LogEntry{{Index: idx, Data: []byte("tail")}})
 	require.NoError(t, err)
 	idx++
-	defer w.Close()
+	t.Cleanup(func() {
+		_ = w.Close()
+	})
 
 	// Now dump and make sure we see all the entries
 	lastDumpedIdx := uint64(0)
@@ -649,7 +659,7 @@ func TestDumpLogs(t *testing.T) {
 			require.NoError(t, err)
 			idx++
 		}
-		w.Close()
+		_ = w.Close()
 	}
 
 	// And one tail
@@ -660,7 +670,7 @@ func TestDumpLogs(t *testing.T) {
 	val := fmt.Sprintf("%05d. Some Value.", idx)
 	err = w.Append([]types.LogEntry{{Index: idx, Data: []byte(val)}})
 	require.NoError(t, err)
-	w.Close()
+	_ = w.Close()
 
 	// Dump everything
 	totalDumped := 0

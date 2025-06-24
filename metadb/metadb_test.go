@@ -35,14 +35,18 @@ func TestMetaDB(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tmpDir, err := os.MkdirTemp("", "raft-wal-meta-test-*")
 			require.NoError(t, err)
-			defer os.RemoveAll(tmpDir)
+			t.Cleanup(func() {
+				_ = os.RemoveAll(tmpDir)
+			})
 
 			{
 				// Should be able to load the DB
 				var db BoltMetaDB
 				gotState, err := db.Load(tmpDir)
 				require.NoError(t, err)
-				defer db.Close()
+				t.Cleanup(func() {
+					_ = db.Close()
+				})
 
 				require.Equal(t, 0, int(gotState.NextSegmentID))
 				require.Empty(t, gotState.Segments)
@@ -55,7 +59,7 @@ func TestMetaDB(t *testing.T) {
 				}
 
 				// Close DB and re-open a new one to ensure persistence.
-				db.Close()
+				_ = db.Close()
 			}
 
 			var db BoltMetaDB
@@ -76,7 +80,9 @@ func TestMetaDB(t *testing.T) {
 func TestMetaDBErrors(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "raft-wal-meta-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	t.Cleanup(func() {
+		_ = os.RemoveAll(tmpDir)
+	})
 
 	var db BoltMetaDB
 
@@ -98,7 +104,9 @@ func TestMetaDBErrors(t *testing.T) {
 	// But not from a different (valid) one
 	tmpDir2, err := os.MkdirTemp("", "wal-fs-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir2)
+	t.Cleanup(func() {
+		_ = os.RemoveAll(tmpDir2)
+	})
 
 	_, err = db.Load(tmpDir2)
 	require.ErrorContains(t, err, "already open in dir")

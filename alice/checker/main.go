@@ -47,7 +47,7 @@ func readStdoutFile(stdoutFile string) (runSummary, error) {
 	if err != nil {
 		return sum, err
 	}
-	defer stdout.Close()
+	defer func() { _ = stdout.Close() }()
 
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {

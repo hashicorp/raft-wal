@@ -91,7 +91,7 @@ func (r *Reader) readFrame(offset uint32) (frameHeader, *types.PooledBuffer, err
 		return fh, buf, nil
 	}
 	// Need to read again, with a bigger buffer, return this one
-	buf.Close()
+	_ = buf.Close()
 
 	// Need to read more bytes, validate that len is a sensible number
 	if fh.len > MaxEntrySize {

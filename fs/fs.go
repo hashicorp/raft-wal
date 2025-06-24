@@ -60,7 +60,7 @@ func (fs *FS) Create(dir string, name string, size uint64) (types.WritableFile, 
 			return nil, fmt.Errorf("maximum file size is %d bytes", math.MaxInt32)
 		}
 		if err := fileutil.Preallocate(f, int64(size), true); err != nil {
-			f.Close()
+			_ = f.Close()
 			return nil, err
 		}
 	}

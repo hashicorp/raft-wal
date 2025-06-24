@@ -68,7 +68,7 @@ func segFull() testStorageOpt {
 			panic(err)
 		}
 		// Seal "full" segments
-		seg.mutate(func(newState *testSegmentState) error {
+		_ = seg.mutate(func(newState *testSegmentState) error {
 			newState.info.SealTime = time.Now()
 			newState.info.IndexStart = 12345
 			newState.info.MaxIndex = newState.info.BaseIndex + uint64(len(es)) - 1
@@ -358,7 +358,7 @@ func (ts *testStorage) CommitState(ps types.PersistentState) error {
 			// places should fail and it wouldn't be a realistic error to return here.
 			continue
 		}
-		ts.mutate(func(newState *testSegmentState) error {
+		_ = ts.mutate(func(newState *testSegmentState) error {
 			newState.info = seg
 			return nil
 		})
