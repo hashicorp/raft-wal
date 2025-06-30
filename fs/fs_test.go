@@ -16,7 +16,9 @@ import (
 func TestFS(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "raft-wal-fs-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	t.Cleanup(func() {
+		_ = os.RemoveAll(tmpDir)
+	})
 
 	fs := New()
 
@@ -28,7 +30,9 @@ func TestFS(t *testing.T) {
 	// Create a new file
 	wf, err := fs.Create(tmpDir, "00001-abcd1234.wal", 512*1024)
 	require.NoError(t, err)
-	defer wf.Close()
+	t.Cleanup(func() {
+		_ = wf.Close()
+	})
 
 	// Should be pre-allocated (on supported file systems).
 	// TODO work out if this is reliable in CI or if we can detect supported FSs?)
@@ -56,7 +60,9 @@ func TestFS(t *testing.T) {
 	// And read them back
 	rf, err := fs.OpenReader(tmpDir, "00001-abcd1234.wal")
 	require.NoError(t, err)
-	defer rf.Close()
+	t.Cleanup(func() {
+		_ = rf.Close()
+	})
 
 	var buf [1024]byte
 	n, err = rf.ReadAt(buf[:], 1024)
@@ -79,7 +85,8 @@ func TestFS(t *testing.T) {
 	require.ErrorIs(t, err, io.EOF)
 
 	// Should also be able to re-open writable file.
-	wf.Close()
+	err = wf.Close()
+	require.NoError(t, err)
 	wf, err = fs.OpenWriter(tmpDir, "00001-abcd1234.wal")
 	require.NoError(t, err)
 
