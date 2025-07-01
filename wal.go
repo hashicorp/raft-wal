@@ -343,7 +343,7 @@ func (w *WAL) GetLog(index uint64, log *raft.Log) error {
 		return err
 	}
 	w.metrics.IncrementCounter("log_entry_bytes_read", uint64(len(raw.Bs)))
-	defer raw.Close()
+	defer func() { _ = raw.Close() }()
 
 	// Decode the log
 	return w.codec.Decode(raw.Bs, log)

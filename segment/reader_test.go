@@ -70,7 +70,9 @@ func TestReader(t *testing.T) {
 
 			w, err := f.Create(seg0)
 			require.NoError(t, err)
-			defer w.Close()
+			t.Cleanup(func() {
+				_ = w.Close()
+			})
 
 			// Append previous entries. We just pick a fixed size and format that's
 			// easy to verify but generally fits in our test block size.
@@ -84,7 +86,7 @@ func TestReader(t *testing.T) {
 					padLen = desc.len - 6
 				}
 				padding := strings.Repeat("P", padLen)
-				for i := 0; i < desc.num; i++ {
+				for range desc.num {
 					v := fmt.Sprintf("%05d:%s", idx, padding)
 					err := w.Append([]types.LogEntry{{Index: idx, Data: []byte(v)}})
 					require.NoError(t, err, "error appending entry idx=%d", idx)
