@@ -18,7 +18,7 @@ require (
 	github.com/segmentio/fasthash v1.0.3
 	github.com/stretchr/testify v1.10.0
 	go.etcd.io/bbolt v1.4.2
-	go.etcd.io/etcd/client/pkg/v3 v3.6.2
+	go.etcd.io/etcd/client/pkg/v3 v3.6.4
 )
 
 require (
