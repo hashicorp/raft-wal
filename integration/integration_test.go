@@ -133,7 +133,9 @@ func TestIntegrationScenarios(t *testing.T) {
 
 			tmpDir, err := os.MkdirTemp("", tc.name)
 			require.NoError(t, err)
-			defer os.RemoveAll(tmpDir)
+			t.Cleanup(func() {
+				_ = os.RemoveAll(tmpDir)
+			})
 
 			// Wrap the BoltDB meta store so we can peek into it's values.
 			meta := &PeekingMetaStore{
@@ -168,11 +170,11 @@ func TestIntegrationScenarios(t *testing.T) {
 				wal.WithMetaStore(meta2),
 			)
 			require.NoError(t, err)
-			defer w2.Close()
 
 			// Assert expected properties still hold
 			assertLogContents(t, w2, tc.expectFirstIdx, tc.expectLastIdx)
 			assertNumSegments(t, meta2, tmpDir, tc.expectNumSegments)
+			require.NoError(t, w2.Close())
 		})
 	}
 }
