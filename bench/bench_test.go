@@ -36,10 +36,12 @@ func BenchmarkAppend(b *testing.B) {
 		for _, bSize := range batchSizes {
 			b.Run(fmt.Sprintf("entrySize=%s/batchSize=%d/v=WAL", sizeNames[i], bSize), func(b *testing.B) {
 				ls, done := openWAL(b)
-				defer done()
-				// close _first_ (defers run in reverse order) before done() which will
-				// delete since rotate could still be happening
-				defer ls.Close()
+				b.Cleanup(func() {
+					// close _first_ before done() which will
+					// delete since rotate could still be happening
+					_ = ls.Close()
+					done()
+				})
 				runAppendBench(b, ls, s, bSize)
 			})
 			b.Run(fmt.Sprintf("entrySize=%s/batchSize=%d/v=Bolt", sizeNames[i], bSize), func(b *testing.B) {
@@ -58,13 +60,15 @@ func openWAL(b *testing.B) (*wal.WAL, func()) {
 	ls, err := wal.Open(tmpDir, wal.WithSegmentSize(512))
 	require.NoError(b, err)
 
-	return ls, func() { os.RemoveAll(tmpDir) }
+	return ls, func() { _ = os.RemoveAll(tmpDir) }
 }
 
 func openBolt(b *testing.B) *raftboltdb.BoltStore {
 	tmpDir, err := os.MkdirTemp("", "raft-wal-bench-*")
 	require.NoError(b, err)
-	defer os.RemoveAll(tmpDir)
+	b.Cleanup(func() {
+		_ = os.RemoveAll(tmpDir)
+	})
 
 	ls, err := raftboltdb.NewBoltStore(filepath.Join(tmpDir, "bolt-wal.db"))
 	require.NoError(b, err)
@@ -108,21 +112,25 @@ func BenchmarkGetLogs(b *testing.B) {
 		"1m",
 	}
 	for i, s := range sizes {
-		wLs, done := openWAL(b)
-		defer done()
-		// close _first_ (defers run in reverse order) before done() which will
-		// delete since rotate could still be happening
-		defer wLs.Close()
-		populateLogs(b, wLs, s, 128) // fixed 128 byte logs
+		b.Run(sizeNames[i], func(b *testing.B) {
+			wLs, done := openWAL(b)
+			b.Cleanup(func() {
+				// close _first_ before done() which will
+				// delete since rotate could still be happening
+				_ = wLs.Close()
+				done()
+			})
+			populateLogs(b, wLs, s, 128) // fixed 128 byte logs
 
-		bLs := openBolt(b)
-		populateLogs(b, bLs, s, 128) // fixed 128 byte logs
+			bLs := openBolt(b)
+			populateLogs(b, bLs, s, 128) // fixed 128 byte logs
 
-		b.Run(fmt.Sprintf("numLogs=%s/v=WAL", sizeNames[i]), func(b *testing.B) {
-			runGetLogBench(b, wLs, s)
-		})
-		b.Run(fmt.Sprintf("numLogs=%s/v=Bolt", sizeNames[i]), func(b *testing.B) {
-			runGetLogBench(b, bLs, s)
+			b.Run(fmt.Sprintf("numLogs=%s/v=WAL", sizeNames[i]), func(b *testing.B) {
+				runGetLogBench(b, wLs, s)
+			})
+			b.Run(fmt.Sprintf("numLogs=%s/v=Bolt", sizeNames[i]), func(b *testing.B) {
+				runGetLogBench(b, bLs, s)
+			})
 		})
 	}
 }
@@ -177,7 +185,9 @@ func runGetLogBench(b *testing.B, ls raft.LogStore, n int) {
 func BenchmarkOSCreateAndPreallocate(b *testing.B) {
 	tmpDir, err := os.MkdirTemp("", "raft-wal-bench-*")
 	require.NoError(b, err)
-	defer os.RemoveAll(tmpDir)
+	b.Cleanup(func() {
+		_ = os.RemoveAll(tmpDir)
+	})
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -192,14 +202,16 @@ func BenchmarkOSCreateAndPreallocate(b *testing.B) {
 			panic(err)
 		}
 		b.StopTimer()
-		f.Close()
+		_ = f.Close()
 	}
 }
 
 func BenchmarkOSRename(b *testing.B) {
 	tmpDir, err := os.MkdirTemp("", "raft-wal-bench-*")
 	require.NoError(b, err)
-	defer os.RemoveAll(tmpDir)
+	b.Cleanup(func() {
+		_ = os.RemoveAll(tmpDir)
+	})
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -208,7 +220,7 @@ func BenchmarkOSRename(b *testing.B) {
 		// background
 		f, err := os.OpenFile(tmpName, os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644))
 		require.NoError(b, err)
-		f.Close()
+		_ = f.Close()
 
 		fname := filepath.Join(tmpDir, fmt.Sprintf("test-%d.txt", i))
 		b.StartTimer()

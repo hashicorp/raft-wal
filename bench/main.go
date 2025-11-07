@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,7 +64,7 @@ func main() {
 			panic(err)
 		}
 
-		defer os.RemoveAll(tmpDir)
+		defer func() { _ = os.RemoveAll(tmpDir) }()
 		o.dir = tmpDir
 	} else {
 		// Delete metadb and any segment files present
@@ -78,7 +77,7 @@ func main() {
 				continue
 			}
 			if strings.HasSuffix(f.Name(), ".wal") || f.Name() == metadb.FileName || f.Name() == "raft.db" {
-				os.RemoveAll(filepath.Join(o.dir, f.Name()))
+				_ = os.RemoveAll(filepath.Join(o.dir, f.Name()))
 			}
 		}
 	}
@@ -100,9 +99,9 @@ func main() {
 
 	printHistogram(teeOut, "Good Append Latencies (ms)", summary.SuccessHistogram, 1_000_000)
 
-	fmt.Fprintln(teeOut, summary)
-	summary.GenerateLatencyDistribution(nil, outFileName(o, "append-lat"))
-	ioutil.WriteFile(outFileName(o, "stdout"), outBuf.Bytes(), 0644)
+	_, _ = fmt.Fprintln(teeOut, summary)
+	_ = summary.GenerateLatencyDistribution(nil, outFileName(o, "append-lat"))
+	_ = os.WriteFile(outFileName(o, "stdout"), outBuf.Bytes(), 0644)
 }
 
 func outFileName(o opts, suffix string) string {
@@ -116,9 +115,9 @@ func outFileName(o opts, suffix string) string {
 }
 
 func printHistogram(f io.Writer, name string, h *hdrhistogram.Histogram, scale int64) {
-	fmt.Fprintf(f, "\n==> %s\n", name)
-	fmt.Fprintf(f, "  count    mean     p50     p99   p99.9     max\n")
-	fmt.Fprintf(f, " %6d  %6.0f  %6d  %6d  %6d  %6d\n",
+	_, _ = fmt.Fprintf(f, "\n==> %s\n", name)
+	_, _ = fmt.Fprintf(f, "  count    mean     p50     p99   p99.9     max\n")
+	_, _ = fmt.Fprintf(f, " %6d  %6.0f  %6d  %6d  %6d  %6d\n",
 		h.TotalCount(),
 		h.Mean()/float64(scale),
 		h.ValueAtPercentile(50)/scale,

@@ -22,8 +22,10 @@ const (
 // directory. It uses a VFS to abstract actual file system operations for easier
 // testing.
 type Filer struct {
-	dir     string
-	vfs     types.VFS
+	dir string
+	vfs types.VFS
+
+	// Pool of *[]byte
 	bufPool sync.Pool
 }
 
@@ -33,8 +35,9 @@ func NewFiler(dir string, vfs types.VFS) *Filer {
 		dir: dir,
 		vfs: vfs,
 	}
-	f.bufPool.New = func() interface{} {
-		return make([]byte, minBufSize)
+	f.bufPool.New = func() any {
+		buf := make([]byte, minBufSize)
+		return &buf
 	}
 	return f
 }

@@ -5,7 +5,6 @@ package fs
 
 import (
 	"fmt"
-	"io/ioutil"
 	"math"
 	"os"
 	"path/filepath"
@@ -31,7 +30,7 @@ func New() *FS {
 // nil error is assumed to mean that the directory exists and was readable,
 // but contains no files.
 func (fs *FS) ListDir(dir string) ([]string, error) {
-	files, err := ioutil.ReadDir(dir)
+	files, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +60,7 @@ func (fs *FS) Create(dir string, name string, size uint64) (types.WritableFile, 
 			return nil, fmt.Errorf("maximum file size is %d bytes", math.MaxInt32)
 		}
 		if err := fileutil.Preallocate(f, int64(size), true); err != nil {
-			f.Close()
+			_ = f.Close()
 			return nil, err
 		}
 	}
