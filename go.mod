@@ -1,8 +1,6 @@
 module github.com/hashicorp/raft-wal
 
-go 1.23.0
-
-toolchain go1.23.5
+go 1.24
 
 require (
 	github.com/HdrHistogram/hdrhistogram-go v1.1.2
@@ -16,9 +14,9 @@ require (
 	github.com/hashicorp/raft-boltdb v0.0.0-20230125174641-2a8082862702
 	github.com/hashicorp/raft-boltdb/v2 v2.3.1
 	github.com/segmentio/fasthash v1.0.3
-	github.com/stretchr/testify v1.10.0
+	github.com/stretchr/testify v1.11.1
 	go.etcd.io/bbolt v1.4.3
-	go.etcd.io/etcd/client/pkg/v3 v3.6.4
+	go.etcd.io/etcd/client/pkg/v3 v3.6.5
 )
 
 require (
