@@ -1,11 +1,9 @@
 module github.com/hashicorp/raft-wal
 
-go 1.23.0
-
-toolchain go1.23.5
+go 1.24
 
 require (
-	github.com/HdrHistogram/hdrhistogram-go v1.1.2
+	github.com/HdrHistogram/hdrhistogram-go v1.2.0
 	github.com/benbjohnson/immutable v0.4.3
 	github.com/benmathews/bench v0.0.0-20210120214102-f7c75b9ef6e7
 	github.com/benmathews/hdrhistogram-writer v0.0.0-20210120211942-3cb1c7c33f95
@@ -16,9 +14,9 @@ require (
 	github.com/hashicorp/raft-boltdb v0.0.0-20230125174641-2a8082862702
 	github.com/hashicorp/raft-boltdb/v2 v2.3.1
 	github.com/segmentio/fasthash v1.0.3
-	github.com/stretchr/testify v1.10.0
+	github.com/stretchr/testify v1.11.1
 	go.etcd.io/bbolt v1.4.3
-	go.etcd.io/etcd/client/pkg/v3 v3.6.4
+	go.etcd.io/etcd/client/pkg/v3 v3.6.6
 )
 
 require (
@@ -38,6 +36,5 @@ require (
 	golang.org/x/exp v0.0.0-20220827204233-334a2380cb91 // indirect
 	golang.org/x/sys v0.31.0 // indirect
 	golang.org/x/time v0.1.0 // indirect
-	gonum.org/v1/gonum v0.12.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
