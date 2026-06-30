@@ -90,10 +90,7 @@ func CopyLogs(ctx context.Context, dst, src raft.LogStore, batchBytes int, progr
 			return fmt.Errorf("failed writing %s: %w", batchSummary, err)
 		}
 		update("  -> wrote %s (%3.0f%% complete)", batchSummary, (float32(n-1)/float32(total))*100.0)
-		batchN++
-		batch = batch[:0]
 		totalBytes += batchSize
-		batchSize = 0
 	}
 	update("DONE: took %s to copy %d entries (%d bytes)", time.Since(st), total, totalBytes)
 	return nil

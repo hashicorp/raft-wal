@@ -53,7 +53,7 @@ func main() {
 		log.Fatalf("unsupported workload %q", o.workload)
 	}
 
-	if o.init == true {
+	if o.init {
 		fn = initFn
 	}
 	if fn == nil {

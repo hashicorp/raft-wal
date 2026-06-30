@@ -172,7 +172,9 @@ func TestStore(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 
 			peers := newPeerSet()
-			defer peers.Close()
+			t.Cleanup(func() {
+				_ = peers.Close()
+			})
 
 			for _, step := range tc.steps {
 				t.Logf(" -> test step %s", step)
@@ -362,7 +364,7 @@ func newPeerSet() *peerSet {
 
 func (s *peerSet) Close() error {
 	for node, ls := range s.lss {
-		ls.Close()
+		_ = ls.Close()
 		delete(s.lss, node)
 		delete(s.tss, node)
 		delete(s.chs, node)
@@ -532,7 +534,7 @@ func (s testStep) String() string {
 		return fmt.Sprintf("append(%d)", len(s.appendBatch))
 
 	case s.appendBatch != nil && s.checkPoint:
-		return fmt.Sprintf("checkpoint()")
+		return "checkpoint()"
 
 	case s.replicateMax != 0:
 		corrupt := ""
@@ -570,7 +572,7 @@ func (s testStep) String() string {
 		return fmt.Sprintf("corruptWal(%s, %d)", s.targetNode, s.corruptWALIndex)
 
 	default:
-		return fmt.Sprintf("invalid step")
+		return "invalid step"
 	}
 }
 

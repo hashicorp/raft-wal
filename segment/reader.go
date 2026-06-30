@@ -91,7 +91,7 @@ func (r *Reader) readFrame(offset uint32) (frameHeader, *types.PooledBuffer, err
 		return fh, buf, nil
 	}
 	// Need to read again, with a bigger buffer, return this one
-	buf.Close()
+	_ = buf.Close()
 
 	// Need to read more bytes, validate that len is a sensible number
 	if fh.len > MaxEntrySize {
@@ -114,9 +114,9 @@ func (r *Reader) makeBuffer() *types.PooledBuffer {
 	if r.bufPool == nil {
 		return &types.PooledBuffer{Bs: make([]byte, minBufSize)}
 	}
-	buf := r.bufPool.Get().([]byte)
+	buf := r.bufPool.Get().(*[]byte)
 	return &types.PooledBuffer{
-		Bs: buf,
+		Bs: *buf,
 		CloseFn: func() {
 			// Note we always return the whole allocated buf regardless of what Bs
 			// ended up being sliced to.

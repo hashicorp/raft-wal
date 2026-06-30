@@ -104,7 +104,7 @@ func safeInitBoltDB(dir string) error {
 	}
 
 	tx, err := bb.Begin(true)
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if err != nil {
 		return err
@@ -160,7 +160,7 @@ func (db *BoltMetaDB) Load(dir string) (types.PersistentState, error) {
 	if err != nil {
 		return state, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	meta := tx.Bucket([]byte(MetaBucket))
 
 	// We just need one key for now so use the byte 'm' for meta arbitrarily.
@@ -196,7 +196,7 @@ func (db *BoltMetaDB) CommitState(state types.PersistentState) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	meta := tx.Bucket([]byte(MetaBucket))
 
 	if err := meta.Put([]byte(MetaKey), encoded); err != nil {
@@ -217,7 +217,7 @@ func (db *BoltMetaDB) GetStable(key []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	stable := tx.Bucket([]byte(StableBucket))
 
 	val := stable.Get(key)
@@ -243,7 +243,7 @@ func (db *BoltMetaDB) SetStable(key []byte, value []byte) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	stable := tx.Bucket([]byte(StableBucket))
 
 	if value == nil {

@@ -162,12 +162,14 @@ func TestWriterRecoversFromWriteFailure(t *testing.T) {
 
 			w, err := f.Create(seg0)
 			require.NoError(t, err)
-			defer w.Close()
+			t.Cleanup(func() {
+				_ = w.Close()
+			})
 
 			batch := make([]types.LogEntry, 5)
 			for i := range batch {
 				batch[i].Index = uint64(i + 1)
-				batch[i].Data = []byte(fmt.Sprintf("val-%d", i+1))
+				batch[i].Data = fmt.Appendf(nil, "val-%d", i+1)
 			}
 			maxIdx := len(batch)
 			expectFirstIdx := 0
@@ -179,7 +181,7 @@ func TestWriterRecoversFromWriteFailure(t *testing.T) {
 				expectLastIdx = maxIdx
 				for i := range batch {
 					batch[i].Index = uint64(i + maxIdx + 1)
-					batch[i].Data = []byte(fmt.Sprintf("val-%d", i+maxIdx+1))
+					batch[i].Data = fmt.Appendf(nil, "val-%d", i+maxIdx+1)
 				}
 			}
 
@@ -205,7 +207,7 @@ func TestWriterRecoversFromWriteFailure(t *testing.T) {
 			w2, err := f.RecoverTail(seg0)
 			require.NoError(t, err)
 			assertExpectedLogs(t, w2, expectFirstIdx, expectLastIdx)
-			w2.Close()
+			_ = w2.Close()
 		}
 
 		t.Run(tc.name+" empty", func(t *testing.T) {
@@ -234,7 +236,7 @@ func assertExpectedReaderLogs(t *testing.T, r types.SegmentReader, first, last i
 		buf, err := r.GetLog(uint64(idx))
 		require.NoError(t, err)
 		require.Equal(t, fmt.Sprintf("val-%d", idx), string(buf.Bs))
-		buf.Close()
+		_ = buf.Close()
 	}
 }
 
@@ -247,12 +249,14 @@ func TestWriterForceSeal(t *testing.T) {
 
 	w, err := f.Create(seg0)
 	require.NoError(t, err)
-	defer w.Close()
+	t.Cleanup(func() {
+		_ = w.Close()
+	})
 
 	batch := make([]types.LogEntry, 5)
 	for i := range batch {
 		batch[i].Index = uint64(i + 1)
-		batch[i].Data = []byte(fmt.Sprintf("val-%d", i+1))
+		batch[i].Data = fmt.Appendf(nil, "val-%d", i+1)
 	}
 	require.NoError(t, w.Append(batch))
 

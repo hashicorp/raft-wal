@@ -29,7 +29,7 @@ var (
 
 func init() {
 	randomData = make([]byte, 1024*1024)
-	rand.Read(randomData)
+	_, _ = rand.Read(randomData)
 }
 
 // appendRequesterFactory implements bench.RequesterFactory
@@ -113,7 +113,7 @@ func (r *appendRequester) Setup() error {
 		// Write lots of big records and then delete them again. We'll use batches
 		// of 1000 1024 byte records for now to speed things up a bit.
 		preBatch := make([]*raft.Log, 0, 1000)
-		fmt.Fprintf(r.output, "Preloading up to index %d\n", r.opts.preLoadN)
+		_, _ = fmt.Fprintf(r.output, "Preloading up to index %d\n", r.opts.preLoadN)
 		for r.index <= uint64(r.opts.preLoadN) {
 			preBatch = append(preBatch, &raft.Log{Index: r.index, Data: randomData[:1024]})
 			r.index++
@@ -133,7 +133,7 @@ func (r *appendRequester) Setup() error {
 		}
 
 		// Now truncate back to trailingLogs.
-		fmt.Fprintf(r.output, "Truncating 1 - %d\n", r.index-uint64(r.opts.truncateTrailingLogs))
+		_, _ = fmt.Fprintf(r.output, "Truncating 1 - %d\n", r.index-uint64(r.opts.truncateTrailingLogs))
 		err := r.store.DeleteRange(1, r.index-uint64(r.opts.truncateTrailingLogs))
 		if err != nil {
 			return err
@@ -142,12 +142,12 @@ func (r *appendRequester) Setup() error {
 	}
 	if r.opts.truncatePeriod > 0 {
 		r.truncateTiming = hdrhistogram.New(1, 10_000_000, 3)
-		fmt.Fprintf(r.output, "Starting Truncator every %s\n", r.opts.truncatePeriod)
+		_, _ = fmt.Fprintf(r.output, "Starting Truncator every %s\n", r.opts.truncatePeriod)
 		ctx, cancel := context.WithCancel(context.Background())
 		r.truncateStop = cancel
 		go r.runTruncate(ctx)
 	} else {
-		fmt.Fprintf(r.output, "Truncation disabled\n")
+		_, _ = fmt.Fprintf(r.output, "Truncation disabled\n")
 	}
 
 	return nil
@@ -178,7 +178,7 @@ func (r *appendRequester) runTruncate(ctx context.Context) {
 				st := time.Now()
 				err := r.store.DeleteRange(first, deleteMax)
 				elapsed := time.Since(st)
-				r.truncateTiming.RecordValue(elapsed.Microseconds())
+				_ = r.truncateTiming.RecordValue(elapsed.Microseconds())
 				if err != nil {
 					panic(err)
 				}
@@ -206,15 +206,15 @@ type metricer interface {
 
 func (r *appendRequester) dumpStats() {
 	if m, ok := r.store.(metricer); ok {
-		fmt.Fprintln(r.output, "\n== METRICS ==========")
+		_, _ = fmt.Fprintln(r.output, "\n== METRICS ==========")
 		for k, v := range m.Metrics() {
-			fmt.Fprintf(r.output, "% 25s: % 15d\n", k, v)
+			_, _ = fmt.Fprintf(r.output, "% 25s: % 15d\n", k, v)
 		}
 	}
 	if r.truncateTiming != nil {
 		scaleFactor := 0.001 // Scale us to ms.
 		if err := histwriter.WriteDistributionFile(r.truncateTiming, nil, scaleFactor, outFileName(r.opts, "truncate-lat")); err != nil {
-			fmt.Fprintf(r.output, "ERROR writing truncate histogram: %s\n", err)
+			_, _ = fmt.Fprintf(r.output, "ERROR writing truncate histogram: %s\n", err)
 		}
 		printHistogram(r.output, "Truncate Latency (ms)", r.truncateTiming, 1000)
 	}

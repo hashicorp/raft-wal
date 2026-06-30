@@ -127,10 +127,6 @@ func (s *state) getTailInfo() *segmentState {
 	return &tail
 }
 
-func (s *state) append(entries []types.LogEntry) error {
-	return s.tail.Append(entries)
-}
-
 func (s *state) firstIndex() uint64 {
 	it := s.segments.Iterator()
 	_, seg, ok := it.Next()
