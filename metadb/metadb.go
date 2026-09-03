@@ -63,12 +63,12 @@ func (db *BoltMetaDB) ensureOpen(dir string) error {
 	// BoltDB can get stuck in invalid states if we crash while it's initializing.
 	// We can't distinguish those as safe to just wipe it and start again because
 	// we don't know for sure if it's failing due to bad init or later corruption
-	// (which would loose data if we just wipe and start over). So to ensure
+	// (which would lose data if we just wipe and start over). So to ensure
 	// initial creation of the WAL is as crash-safe as possible we will manually
 	// detect we have an atomic init procedure:
-	//  1. Check if file exits already. If yes, skip init and just open it.
+	//  1. Check if file exists already. If yes, skip init and just open it.
 	//  2. Delete any existing DB file with tmp name
-	//  3. Creat a new BoltDB that is empty and has the buckets with a temp name.
+	//  3. Create a new BoltDB that is empty and has the buckets with a temp name.
 	//  4. Once that's committed, rename to final name and Fsync parent dir
 	_, err := os.Stat(fileName)
 	if err == nil {
@@ -121,7 +121,7 @@ func safeInitBoltDB(dir string) error {
 		return err
 	}
 	// Close the file ready to rename into place and re-open. This probably isn't
-	// necessary but it make it easier to reason about this code path being
+	// necessary but it makes it easier to reason about this code path being
 	// totally separate from the common case.
 	if err := bb.Close(); err != nil {
 		return err
@@ -132,7 +132,7 @@ func safeInitBoltDB(dir string) error {
 		return err
 	}
 
-	// And Fsync that parent dir to make sure the new new file with it's new name
+	// And Fsync that parent dir to make sure the new file with its new name
 	// is persisted!
 	dirF, err := os.Open(dir)
 	if err != nil {
@@ -147,8 +147,8 @@ func safeInitBoltDB(dir string) error {
 }
 
 // Load loads the existing persisted state. If there is no existing state
-// implementations are expected to create initialize new storage and return an
-// empty state.
+// implementations are expected to create and initialize new storage and
+// return an empty state.
 func (db *BoltMetaDB) Load(dir string) (types.PersistentState, error) {
 	var state types.PersistentState
 

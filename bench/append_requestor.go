@@ -102,7 +102,7 @@ func (r *appendRequester) Setup() error {
 	for i := range r.batch {
 		r.batch[i] = &raft.Log{
 			// We'll vary the indexes each time but save on setting this up the same
-			// way every time to!
+			// way every time too!
 			Data:       randomData[:r.opts.logSize],
 			AppendedAt: time.Now(),
 		}

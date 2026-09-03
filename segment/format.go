@@ -16,7 +16,7 @@ import (
 const (
 	// MaxEntrySize is the largest we allow any single raft log entry to be. This
 	// is larger than our raft implementation ever allows so seems safe to encode
-	// statically for now. We could make this configurable. It's main purpose it
+	// statically for now. We could make this configurable. Its main purpose is
 	// to limit allocation when reading entries back if their lengths are
 	// corrupted.
 	MaxEntrySize = 64 * 1024 * 1024 // 64 MiB

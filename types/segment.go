@@ -25,7 +25,7 @@ type SegmentInfo struct {
 	// MaxIndex is the logical highest index that still exists in the segment. It
 	// may be lower than the actual highest index if a tail truncation has
 	// "deleted" a suffix of the segment. It is zero for unsealed segments and
-	// only set one seal.
+	// only set on seal.
 	MaxIndex uint64
 
 	// Codec identifies the codec used to encode log entries. Codec values 0 to
@@ -36,7 +36,7 @@ type SegmentInfo struct {
 	// a randomly generated identifier is almost certainly unique.
 	Codec uint64
 
-	// IndexStart is the file offset where the index can be read from it's 0 for
+	// IndexStart is the file offset where the index can be read from. It's 0 for
 	// tail segments and only set after a segment is sealed.
 	IndexStart uint64
 
@@ -55,8 +55,8 @@ type SegmentInfo struct {
 }
 
 // SegmentFiler is the interface that provides access to segments to the WAL. It
-// encapsulated creating, and recovering segments and returning reader or writer
-// interfaces to interact with them. It's main purpose is to abstract the core
+// encapsulates creating, and recovering segments and returning reader or writer
+// interfaces to interact with them. Its main purpose is to abstract the core
 // WAL logic both from the actual encoding layer of segment files. You can think
 // of it as a layer of abstraction above the VFS which abstracts actual file
 // system operations on files but knows nothing about the format. In tests for
@@ -86,9 +86,9 @@ type SegmentFiler interface {
 	List() (map[uint64]uint64, error)
 
 	// Delete removes the segment with given baseIndex and id if it exists. Note
-	// that baseIndex is technically redundant since ID is unique on it's own. But
+	// that baseIndex is technically redundant since ID is unique on its own. But
 	// in practice we name files (or keys) with both so that they sort correctly.
-	// This interface allows a  simpler implementation where we can just delete
+	// This interface allows a simpler implementation where we can just delete
 	// the file if it exists without having to scan the underlying storage for a.
 	Delete(baseIndex, ID uint64) error
 }

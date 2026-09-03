@@ -15,10 +15,10 @@ import (
 // is an immutable map so changing and re-assigning to the clone won't impact
 // the original map, and tail is just a pointer that can be mutated in the
 // shallow clone. Note that methods called on the tail segmentWriter may mutate
-// it's state so must only be called while holding the WAL's writeLock.
+// its state so must only be called while holding the WAL's writeLock.
 type state struct {
 	// refCount tracks readers that are reading segments based on this metadata.
-	// It is accessed atomically nd must be 64 bit aligned (i.e. leave it at the
+	// It is accessed atomically and must be 64 bit aligned (i.e. leave it at the
 	// start of the struct).
 	refCount int32
 	// finaliser is set at most once while WAL is holding the write lock in order
@@ -190,7 +190,7 @@ func (s *state) release() {
 	if new == 0 {
 		// Cleanup state associated with this version now all refs have gone. Since
 		// there are no more refs and we should not set a finalizer until this state
-		// is no longer the active state, we can be sure this will happen only one.
+		// is no longer the active state, we can be sure this will happen only once.
 		// Even still lets swap the fn to ensure we only call finalizer once ever!
 		// We can't swap actual nil as it's not the same type as func() so do a
 		// dance with a nilFn below.
