@@ -77,7 +77,7 @@ func TestSegmentBasics(t *testing.T) {
 	require.NoError(t, w.Append(batch))
 
 	// Peek at the whole "file"
-	t.Logf("\n" + file.Dump())
+	t.Log("\n" + file.Dump())
 
 	// Now we should be able to read those all back sequentially through the
 	// writer, though some are in the tail block and some in complete blocks.

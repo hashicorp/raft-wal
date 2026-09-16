@@ -1,4 +1,4 @@
-// Copyright IBM Corp. 2020, 2025
+// Copyright IBM Corp. 2020, 2026
 // SPDX-License-Identifier: MPL-2.0
 
 // # Metrics Configuration
@@ -24,7 +24,7 @@
 // Migration:
 // To migrate an application currently using the older armon/go-metrics to instead use hashicorp/go-metrics the following should be done.
 //
-//  1. Upgrade libraries using armon/go-metrics to consume hashicorp/go-metrics/compat instead. This should involve only changing import statements. All repositories within the hashicorp GitHub organization will be getting these updates in early 2025.
+//  1. Upgrade libraries using armon/go-metrics to consume hashicorp/go-metrics instead. This should involve only changing import statements. All repositories within the hashicorp GitHub organization will be getting these updates in early 2025.
 //
 //  2. Update an applications library dependencies to those that have the compatibility layer configured.
 //
@@ -37,7 +37,7 @@
 // Eventually once the default behavior changes to use hashicorp/go-metrics by default (mid-2025), you can drop the hashicorpmetrics build tag.
 package metrics
 
-import gometrics "github.com/hashicorp/go-metrics/compat"
+import gometrics "github.com/hashicorp/go-metrics"
 
 // GoMetricsCollector implements a Collector that passes through observations to
 // a go-metrics instance. The zero value works, writing metrics to the default
