@@ -59,6 +59,28 @@ func TestIntegrationScenarios(t *testing.T) {
 			expectNumSegments: 3,
 		},
 		{
+			name: "head truncation within the active segment",
+			steps: []step{
+				// Two batches of 4 fit in one 4K segment, so nothing is sealed and
+				// the head being truncated is the tail.
+				appendLogsInBatches(2, 4),
+				deleteRange(1, 5),
+			},
+			expectFirstIdx:    6,
+			expectLastIdx:     8,
+			expectNumSegments: 1,
+		},
+		{
+			name: "head truncation deleting files into the active segment",
+			steps: []step{
+				appendLogsInBatches(11, 4),
+				deleteRange(1, 40),
+			},
+			expectFirstIdx:    41,
+			expectLastIdx:     44,
+			expectNumSegments: 1,
+		},
+		{
 			name: "head truncation deleting multiple files",
 			steps: []step{
 				appendLogsInBatches(11, 4),
@@ -240,6 +262,14 @@ func assertLogContents(t *testing.T, w *wal.WAL, first, last int) {
 	require.Equal(t, last, int(lastIdx))
 
 	var log raft.Log
+	// Logs before the first index must not be readable, even if they are still
+	// present in a segment file that has not been deleted yet.
+	if first > 1 {
+		for _, i := range []int{1, first - 1} {
+			err := w.GetLog(uint64(i), &log)
+			require.ErrorIs(t, err, wal.ErrNotFound, "log index %d is before first index %d", i, first)
+		}
+	}
 	for i := first; i <= last; i++ {
 		err := w.GetLog(uint64(i), &log)
 		require.NoError(t, err, "log index %d", i)

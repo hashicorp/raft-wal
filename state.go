@@ -58,6 +58,15 @@ func (s *state) Persistent() types.PersistentState {
 }
 
 func (s *state) getLog(index uint64) (*types.PooledBuffer, error) {
+	// A head truncation updates MinIndex in the segment metadata but not in the
+	// tail writer's copy of it, so the tail writer can still serve logs that
+	// were deleted from the head of an unsealed segment. Reject anything before
+	// the first index here so the result does not depend on which segment the
+	// log was in.
+	if index < s.firstIndex() {
+		return nil, ErrNotFound
+	}
+
 	// Check the tail writer first
 	if s.tail != nil {
 		raw, err := s.tail.GetLog(index)
