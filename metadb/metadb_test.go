@@ -107,7 +107,7 @@ func TestMetaDBErrors(t *testing.T) {
 	// Loading from a non-existent dir is an error
 	var db2 BoltMetaDB
 	_, err = db2.Load("fake-dir-that-does-not-exist")
-	require.ErrorContains(t, err, "no such file or directory")
+	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
 func makeState(nSegs int) *types.PersistentState {

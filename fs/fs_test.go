@@ -28,7 +28,11 @@ func TestFS(t *testing.T) {
 	// Create a new file
 	wf, err := fs.Create(tmpDir, "00001-abcd1234.wal", 512*1024)
 	require.NoError(t, err)
-	defer wf.Close()
+	defer func() {
+		if wf != nil {
+			_ = wf.Close()
+		}
+	}()
 
 	// Should be pre-allocated (on supported file systems).
 	// TODO work out if this is reliable in CI or if we can detect supported FSs?)
@@ -56,7 +60,11 @@ func TestFS(t *testing.T) {
 	// And read them back
 	rf, err := fs.OpenReader(tmpDir, "00001-abcd1234.wal")
 	require.NoError(t, err)
-	defer rf.Close()
+	defer func() {
+		if rf != nil {
+			_ = rf.Close()
+		}
+	}()
 
 	var buf [1024]byte
 	n, err = rf.ReadAt(buf[:], 1024)
@@ -79,7 +87,8 @@ func TestFS(t *testing.T) {
 	require.ErrorIs(t, err, io.EOF)
 
 	// Should also be able to re-open writable file.
-	wf.Close()
+	require.NoError(t, wf.Close())
+	wf = nil
 	wf, err = fs.OpenWriter(tmpDir, "00001-abcd1234.wal")
 	require.NoError(t, err)
 
@@ -109,6 +118,10 @@ func TestFS(t *testing.T) {
 	require.Equal(t, []string{"00001-abcd1234.wal"}, files)
 
 	// Delete should work
+	require.NoError(t, rf.Close())
+	rf = nil
+	require.NoError(t, wf.Close())
+	wf = nil
 	require.NoError(t, fs.Delete(tmpDir, "00001-abcd1234.wal"))
 
 	files, err = fs.ListDir(tmpDir)
@@ -120,18 +133,14 @@ func TestRealFSNoDir(t *testing.T) {
 	fs := New()
 
 	_, err := fs.ListDir("/not-a-real-dir")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "no such file or directory")
+	require.ErrorIs(t, err, os.ErrNotExist)
 
 	_, err = fs.Create("/not-a-real-dir", "foo", 1024)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "no such file or directory")
+	require.ErrorIs(t, err, os.ErrNotExist)
 
 	_, err = fs.OpenReader("/not-a-real-dir", "foo")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "no such file or directory")
+	require.ErrorIs(t, err, os.ErrNotExist)
 
 	_, err = fs.OpenWriter("/not-a-real-dir", "foo")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "no such file or directory")
+	require.ErrorIs(t, err, os.ErrNotExist)
 }
