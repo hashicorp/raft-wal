@@ -134,16 +134,7 @@ func safeInitBoltDB(dir string) error {
 
 	// And Fsync that parent dir to make sure the new new file with it's new name
 	// is persisted!
-	dirF, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	err = dirF.Sync()
-	closeErr := dirF.Close()
-	if err != nil {
-		return err
-	}
-	return closeErr
+	return syncDir(dir)
 }
 
 // Load loads the existing persisted state. If there is no existing state

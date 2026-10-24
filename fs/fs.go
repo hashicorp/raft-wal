@@ -113,16 +113,3 @@ func (fs *FS) OpenReader(dir string, name string) (types.ReadableFile, error) {
 func (fs *FS) OpenWriter(dir string, name string) (types.WritableFile, error) {
 	return os.OpenFile(filepath.Join(dir, name), os.O_RDWR, os.FileMode(0644))
 }
-
-func syncDir(dir string) error {
-	f, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	err = f.Sync()
-	closeErr := f.Close()
-	if err != nil {
-		return err
-	}
-	return closeErr
-}
