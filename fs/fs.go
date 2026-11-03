@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/hashicorp/raft-wal/types"
 	"go.etcd.io/etcd/client/pkg/v3/fileutil"
@@ -115,6 +116,16 @@ func (fs *FS) OpenWriter(dir string, name string) (types.WritableFile, error) {
 }
 
 func syncDir(dir string) error {
+	// Windows doesn't support (or need) fsync-ing a directory. NTFS doesn't
+	// require an explicit directory-level fsync for durability, and
+	// os.File.Sync() on a directory handle calls FlushFileBuffers, which
+	// Windows denies with "Access Denied" since the handle has to be opened
+	// read-only to open a directory at all. Skip it there, matching the
+	// equivalent fix applied for Consul snapshots on Windows.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+
 	f, err := os.Open(dir)
 	if err != nil {
 		return err
