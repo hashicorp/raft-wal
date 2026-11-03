@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/hashicorp/raft-wal/types"
 	"go.etcd.io/bbolt"
@@ -134,6 +135,16 @@ func safeInitBoltDB(dir string) error {
 
 	// And Fsync that parent dir to make sure the new new file with it's new name
 	// is persisted!
+	//
+	// This is skipped on Windows: os.File.Sync() on a directory handle calls
+	// FlushFileBuffers, which Windows denies with "Access Denied" because the
+	// handle can only be opened read-only. NTFS doesn't need an explicit
+	// directory-level fsync for durability anyway, so this matches the
+	// equivalent fix applied for Consul snapshots on Windows.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+
 	dirF, err := os.Open(dir)
 	if err != nil {
 		return err
