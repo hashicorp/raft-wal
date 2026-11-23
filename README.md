@@ -7,12 +7,6 @@ Specifically the library provides and instance of raft's `LogStore` and
 `StableStore` interfaces for storing both raft logs and the other small items
 that require stable storage (like which term the node last voted in).
 
-**This library is still considered experimental!** 
-
-It is complete and reasonably well tested so far but we plan to complete more 
-rigorous end-to-end testing and performance analysis within our products and 
-together with some of our users before we consider this safe for production.
-
 The advantage of this library over `hashicorp/raft-boltdb` that has been used
 for many years in HashiCorp products are:
  1. Efficient truncations that don't cause later appends to slow down due to
